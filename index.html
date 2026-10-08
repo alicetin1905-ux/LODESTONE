@@ -1,0 +1,1218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0d14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="LODESTONE">
+<title>LODESTONE</title>
+<style>
+/* Layout: a trading-desk ladder. One row per coin: name and live price on the left, the nearest pool
+   above (▲) and below (▼) on the right, and a ±15% liquidation strip with price at its centre.
+   Tap a row for the full map. Single dark theme, matching the rest of the toolkit. */
+:root{
+  --ink:#0b0d14;
+  --panel:#11141f;
+  --raise:#1a1e2d;
+  --line:#232838;
+  --fg:#e4e7f0;
+  --muted:#8b91a8;
+  --faint:#4f566f;
+  --accent:#9aa8ff;
+  --up:#2fd4a3;
+  --up-soft:rgba(47,212,163,.15);
+  --dn:#ff5577;
+  --dn-soft:rgba(255,85,119,.15);
+  --warn:#f2b84b;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%;background:var(--ink)}
+body{margin:0;background:var(--ink);color:var(--fg);font:14px/1.45 var(--sans);
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:980px;margin:0 auto;padding-block:18px 48px;display:flex;flex-direction:column;gap:14px}
+button,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px 12px}
+.top h1{margin:0;font:700 19px/1.1 var(--mono);letter-spacing:.34em}
+.top .sub{grid-column:1 / -1;margin:0;color:var(--muted);font-size:12px}
+.live{display:flex;align-items:center;gap:8px;font:12px/1 var(--mono);color:var(--muted);white-space:nowrap}
+.live .dot{width:8px;height:8px;border-radius:50%;background:var(--warn)}
+.live[data-s="live"] .dot{background:var(--up);box-shadow:0 0 0 3px var(--up-soft)}
+.live[data-s="off"] .dot{background:var(--dn)}
+.clock{color:var(--fg);font-variant-numeric:tabular-nums}
+
+.summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.stat{background:var(--panel);padding:10px 12px;display:flex;flex-direction:column;gap:5px;min-width:0}
+.stat .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+.stat .v{font:600 13px/1.2 var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.c-up{color:var(--up)} .c-dn{color:var(--dn)} .sep{color:var(--faint)}
+@media (max-width:560px){.summary{grid-template-columns:1fr 1fr}.stat:first-child{grid-column:1 / -1}}
+
+.feed{display:flex;align-items:center;gap:10px;min-width:0}
+.feed .k{flex:none;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+.feed ul{list-style:none;margin:0;padding:0;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;min-width:0}
+.feed ul::-webkit-scrollbar{display:none}
+.feed li{flex:none;font:12px/1.2 var(--mono);padding:4px 9px;border-radius:999px;background:var(--raise);color:var(--muted)}
+.feed li.up b{color:var(--up);font-weight:600} .feed li.dn b{color:var(--dn);font-weight:600}
+
+.bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.bar label{font-size:12px;color:var(--muted)}
+.spacer{flex:1}
+select,textarea{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 10px}
+.btn{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 14px;cursor:pointer}
+.btn:hover{border-color:var(--faint)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--ink);font-weight:600}
+
+.settings{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.field.wide{grid-column:1 / -1}
+.field label{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+.field small{font-size:11.5px;color:var(--muted)}
+textarea{width:100%;resize:vertical;font:13px/1.4 var(--mono)}
+.actions{grid-column:1 / -1;display:flex;gap:10px;flex-wrap:wrap}
+
+.model{margin:0;font-size:12px;color:var(--muted)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:12px;height:12px;border-radius:3px;display:inline-block;background:var(--raise)}
+.sw.up{background:var(--up)} .sw.dn{background:var(--dn)}
+.sw.big{background:var(--dn-soft)}
+.sw.near{background:transparent;box-shadow:inset 0 0 0 1.5px var(--warn)}
+
+.ladder{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.row{border-bottom:1px solid var(--line)}
+.rowbtn{all:unset;box-sizing:border-box;display:grid;width:100%;cursor:pointer;padding:11px 4px 12px;column-gap:12px;row-gap:3px;
+  grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"coin up" "px dn" "strip strip";align-items:center;
+  -webkit-tap-highlight-color:transparent}
+.rowbtn:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:6px}
+@media (hover:hover){.rowbtn:hover{background:var(--panel)}}
+.row.open .rowbtn{background:var(--panel)}
+.coin{grid-area:coin;display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-width:0}
+.name{font:700 15px/1.2 var(--mono);letter-spacing:.03em}
+.tags{display:inline-flex;gap:5px;flex-wrap:wrap}
+.tag{font:600 10.5px/1 var(--sans);padding:3px 6px;border-radius:999px;background:var(--raise)}
+.tag.up{color:var(--up)} .tag.dn{color:var(--dn)}
+.px{grid-area:px;display:flex;align-items:baseline;gap:8px;min-width:0;font:14px/1.2 var(--mono);font-variant-numeric:tabular-nums}
+.price{font-weight:600;transition:color .5s}
+.price.tu{color:var(--up);transition:none} .price.td{color:var(--dn);transition:none}
+.chg{font-style:normal;font-size:11.5px;color:var(--muted)}
+.chg.pos{color:var(--up)} .chg.neg{color:var(--dn)}
+.cl{display:inline-flex;align-items:baseline;justify-content:flex-end;gap:6px;padding:3px 8px;border-radius:6px;white-space:nowrap;font:13px/1.2 var(--mono);font-variant-numeric:tabular-nums}
+.cl.up{grid-area:up} .cl.dn{grid-area:dn}
+.cl .arrow{font-size:9px}
+.cl.up .arrow{color:var(--up)} .cl.dn .arrow{color:var(--dn)}
+.cl .cp{font-weight:600}
+.cl .cd{font-style:normal;font-size:11.5px;color:var(--muted);min-width:3.4em;text-align:right}
+.cl.big.up{background:var(--up-soft)} .cl.big.dn{background:var(--dn-soft)}
+.cl.near{box-shadow:inset 0 0 0 1.5px var(--warn)}
+.cl.near .cd{color:var(--warn)}
+.cl.err .cp{color:var(--muted);font-weight:400}
+.strip{grid-area:strip;display:block;width:100%;height:24px;margin-top:7px;border-radius:4px}
+@media (min-width:760px){
+  .rowbtn{grid-template-columns:7.5rem 9.5rem 11rem minmax(0,1fr) 11rem;grid-template-areas:"coin px dn strip up";padding:9px 6px}
+  .strip{margin-top:0;height:26px}
+  .cl.up{justify-content:flex-start}
+}
+
+.detail{padding:6px 4px 18px;display:flex;flex-direction:column;gap:14px}
+.chart{display:block;width:100%;height:210px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.col{min-width:0}
+.col h3{margin:0 0 6px;font:600 10.5px/1.3 var(--sans);text-transform:uppercase;letter-spacing:.09em}
+.h-up{color:var(--up)} .h-dn{color:var(--dn)}
+.peaks{list-style:none;margin:0;padding:0}
+.peaks li{display:grid;grid-template-columns:minmax(5.5rem,auto) 4rem 6.5rem minmax(30px,1fr);gap:10px;align-items:center;padding:5px 0;border-bottom:1px dashed var(--line);font:12.5px/1.2 var(--mono);font-variant-numeric:tabular-nums;color:var(--muted)}
+.peaks li b{color:var(--fg);font-weight:500}
+.peaks li.nearest b{font-weight:700}
+.peaks.up li.nearest b{color:var(--up)} .peaks.dn li.nearest b{color:var(--dn)}
+.peaks li.empty{display:block}
+.meter{height:6px;border-radius:3px;background:var(--raise);position:relative;overflow:hidden}
+.meter::after{content:"";position:absolute;left:0;top:0;bottom:0;width:var(--w,0%);border-radius:3px;opacity:.8}
+.peaks.up .meter::after{background:var(--up)} .peaks.dn .meter::after{background:var(--dn)}
+.facts{margin:0;font-size:12px;color:var(--muted)}
+
+.how{border-top:1px solid var(--line);padding-top:14px;color:var(--muted);font-size:13px}
+.how summary{cursor:pointer;color:var(--fg);font-weight:600}
+.how ul{margin:10px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:7px;max-width:70ch}
+@media (prefers-reduced-motion:reduce){.price{transition:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>LODESTONE</h1>
+    <div class="live" id="live" data-s="warn" role="status"><span class="dot"></span><span id="liveTxt">Connecting</span><span class="clock" id="clock"></span></div>
+    <p class="sub">Nearest liquidation clusters · Bybit USDT perps</p>
+  </header>
+
+  <section class="summary" aria-label="Summary">
+    <div class="stat"><span class="k">Bigger pool</span><span class="v"><span class="c-dn">▼ <b id="biasDn">0</b></span> <span class="sep">·</span> <span class="c-up">▲ <b id="biasUp">0</b></span> <span class="sep">·</span> <b id="biasEven">0</b> even</span></div>
+    <div class="stat"><span class="k">Closest pool</span><span class="v" id="closest">—</span></div>
+    <div class="stat"><span class="k">New positions</span><span class="v" id="oiAt">Loading</span></div>
+  </section>
+
+  <section class="feed" id="feed" hidden aria-label="Recent sweeps"><span class="k">Swept</span><ul id="feedList"></ul></section>
+
+  <div class="bar">
+    <label for="sort">Sort</label>
+    <select id="sort">
+      <option value="list">Your order</option>
+      <option value="near">Closest pool</option>
+      <option value="lopsided">Most lopsided</option>
+    </select>
+    <span class="spacer"></span>
+    <button class="btn" id="gear" type="button" aria-expanded="false" aria-controls="settings">Settings</button>
+  </div>
+
+  <form class="settings" id="settings" hidden>
+    <div class="field wide"><label for="coinsIn">Coins</label><textarea id="coinsIn" rows="3" spellcheck="false" autocapitalize="characters" autocomplete="off"></textarea><small>Bybit USDT perps, separated by commas or spaces. Use Bybit's name, e.g. 1000PEPE.</small></div>
+    <div class="field"><label for="mixIn">Leverage mix</label><select id="mixIn"><option value="retail">Retail mix: 5–100x</option><option value="even">Even split: 10/25/50/100x</option></select></div>
+    <div class="field"><label for="lbIn">Lookback</label><select id="lbIn"><option value="3">3 days</option><option value="7">7 days</option><option value="10">10 days</option></select></div>
+    <div class="field"><label for="sigIn">Cluster threshold</label><select id="sigIn"><option value="0.2">20% of strongest</option><option value="0.3">30% of strongest</option><option value="0.4">40% of strongest</option></select></div>
+    <div class="actions"><button class="btn primary" type="submit">Apply</button><button class="btn" type="button" id="resetBtn">Restore defaults</button></div>
+  </form>
+
+  <p class="model" id="model"></p>
+
+  <div class="legend" aria-hidden="true">
+    <span><i class="sw up"></i>▲ shorts liquidated above</span>
+    <span><i class="sw dn"></i>▼ longs liquidated below</span>
+    <span><i class="sw big"></i>shaded = bigger pool (1.5× or more)</span>
+    <span><i class="sw near"></i>amber = within 1%</span>
+  </div>
+
+  <ul class="ladder" id="ladder" aria-label="Coins"></ul>
+
+  <details class="how">
+    <summary>How the levels are estimated</summary>
+    <ul>
+      <li>Data comes only from Bybit's public API: 15-minute candles and open-interest history for each coin, with prices streamed live.</li>
+      <li>Each 15-minute candle where open interest rose counts as new positions opened at that candle's average price. A green candle leans the new positions long, a red one leans them short.</li>
+      <li>New positions are spread across the leverage mix you pick, capped at the coin's max leverage, and get Bybit's isolated liquidation price: longs at entry × (1 − 1/leverage + maintenance margin), shorts at entry × (1 + 1/leverage − maintenance margin).</li>
+      <li>When open interest falls, every open position shrinks by the same share. Any level that price has already traded through is removed.</li>
+      <li>What's left is grouped in 0.1% steps and smoothed. The cluster shown is the closest peak within 15% that reaches your threshold (30% of the strongest peak on that side by default).</li>
+      <li>These are estimates from one exchange, so read each level as a zone of about ±0.5%. Dollar sizes cover Bybit only. New positions are added as each 15-minute candle closes; prices, distances and sweeps update live.</li>
+    </ul>
+  </details>
+</div>
+
+<script id="core">
+// liqmap-core.js — estimated liquidation map from 15m klines + 15m open interest.
+// Pure function (no network, no DOM): the same source runs in the Node tests and in the browser.
+//
+// Model
+//  - Every 15m candle where open interest ROSE = new leveraged positions, opened at the candle VWAP.
+//    Split long/short by candle direction (aggressor side gets up to 75%).
+//  - Each new position is spread over leverage tiers; liq price uses Bybit's isolated formula
+//    long = entry*(1 - 1/L + MMR), short = entry*(1 + 1/L - MMR), L capped at the symbol's max leverage.
+//  - Candles where open interest FELL close positions pro-rata (everything shrinks by OI_after/OI_before).
+//  - A level that price has traded through since the position was opened is gone (already liquidated).
+//  - What is left is binned (0.1% of price), smoothed, and scanned for peaks above and below price.
+function liqMap(candles, oiByTs, p) {
+  const N = candles.length;
+  const price = p.price != null ? p.price : candles[N - 1].c;
+
+  // lowest low / highest high from candle i to now (sweep check)
+  const sufMin = new Float64Array(N + 1).fill(Infinity);
+  const sufMax = new Float64Array(N + 1).fill(-Infinity);
+  for (let i = N - 1; i >= 0; i--) {
+    sufMin[i] = Math.min(sufMin[i + 1], candles[i].l);
+    sufMax[i] = Math.max(sufMax[i + 1], candles[i].h);
+  }
+
+  // births (OI up) and cumulative pro-rata closing factor (OI down)
+  const C = new Float64Array(N);
+  let cum = 1, matched = 0;
+  const births = [];
+  for (let i = 0; i < N; i++) {
+    const k = candles[i];
+    const a = oiByTs.get(k.t), b = oiByTs.get(k.t + p.stepMs);
+    if (a > 0 && b > 0) {
+      matched++;
+      const d = b - a;
+      if (d > 0) {
+        const vwap = k.v > 0 && k.q > 0 ? k.q / k.v : (k.h + k.l + k.c) / 3;
+        const rng = k.h - k.l;
+        const dir = rng > 0 ? (k.c - k.o) / rng : 0;
+        births.push({ i, e: vwap, n: d * vwap, wL: 0.5 + 0.25 * dir });
+      } else if (d < 0) {
+        cum *= b / a;
+      }
+    }
+    C[i] = cum;
+  }
+
+  const tiers = p.tiers.map(([L, w]) => [Math.min(L, p.maxLev), w]);
+  const bw = price * p.binPct;
+  const half = Math.round(p.rangePct / p.binPct);
+  const nb = 2 * half + 1;
+  const lo = price - half * bw; // bin j centre = lo + j*bw ; current price sits at j = half
+  const LH = new Float64Array(nb), SH = new Float64Array(nb);
+  const cNow = C[N - 1];
+  for (const B of births) {
+    const surv = cNow / C[B.i];
+    const mn = sufMin[B.i + 1], mx = sufMax[B.i + 1];
+    for (const [L, w] of tiers) {
+      const lq = B.e * (1 - 1 / L + p.mmr);
+      const sq = B.e * (1 + 1 / L - p.mmr);
+      if (lq < mn) {
+        const j = Math.round((lq - lo) / bw);
+        if (j >= 0 && j < half) LH[j] += B.n * B.wL * w * surv;
+      }
+      if (sq > mx) {
+        const j = Math.round((sq - lo) / bw);
+        if (j > half && j < nb) SH[j] += B.n * (1 - B.wL) * w * surv;
+      }
+    }
+  }
+
+  // gaussian smoothing
+  const smooth = (H) => {
+    const s = p.sigmaBins, r = Math.ceil(3 * s);
+    const ker = [];
+    let tot = 0;
+    for (let x = -r; x <= r; x++) { const v = Math.exp(-(x * x) / (2 * s * s)); ker.push(v); tot += v; }
+    const out = new Float64Array(H.length);
+    for (let j = 0; j < H.length; j++) {
+      let acc = 0;
+      for (let x = -r; x <= r; x++) { const q = j + x; if (q >= 0 && q < H.length) acc += H[q] * ker[x + r]; }
+      out[j] = acc / tot;
+    }
+    return out;
+  };
+  const LS = smooth(LH), SS = smooth(SH);
+  const lim = Math.round(p.searchPct / p.binPct);
+
+  const scan = (S, H, sign) => {
+    // bins on this side of price, within searchPct
+    const first = sign > 0 ? half + 1 : half - lim;
+    const last = sign > 0 ? half + lim : half - 1;
+    const peaks = [];
+    for (let j = Math.max(1, first); j <= Math.min(nb - 2, last); j++) {
+      const v = S[j];
+      if (!(v > 0)) continue;
+      let isMax = true;
+      for (let q = Math.max(0, j - p.peakWin); q <= Math.min(nb - 1, j + p.peakWin); q++) {
+        if (S[q] > v || (S[q] === v && q < j)) { isMax = false; break; }
+      }
+      if (isMax) peaks.push(j);
+    }
+    let total = 0;
+    for (let j = Math.max(0, first); j <= Math.min(nb - 1, last); j++) total += H[j];
+    if (!peaks.length) return { nearest: null, major: null, peaks: [], total };
+    const M = Math.max(...peaks.map((j) => S[j]));
+    const info = (j) => {
+      const th = S[j] * p.zoneFrac;
+      let a = j, b = j;
+      // zone = this peak's own hill: walk outwards while the profile keeps falling and stays above half the peak
+      while (a - 1 >= first && S[a - 1] >= th && S[a - 1] <= S[a]) a--;
+      while (b + 1 <= last && S[b + 1] >= th && S[b + 1] <= S[b]) b++;
+      let size = 0;
+      for (let q = a; q <= b; q++) size += H[q];
+      const px = lo + j * bw;
+      return { px, zlo: lo + a * bw, zhi: lo + b * bw, dist: (px / price - 1) * 100, rel: S[j] / M, size };
+    };
+    const byDist = peaks.slice().sort((x, y) => Math.abs(x - half) - Math.abs(y - half));
+    const nearestJ = byDist.find((j) => S[j] >= p.sigFrac * M);
+    const majorJ = peaks.reduce((m, j) => (S[j] > S[m] ? j : m), peaks[0]);
+    return { nearest: info(nearestJ), major: info(majorJ), peaks: byDist.map(info), total };
+  };
+
+  return {
+    price,
+    up: scan(SS, SH, +1),   // short liquidations above price
+    down: scan(LS, LH, -1), // long liquidations below price
+    prof: { lo, bw, half, LH, SH, LS, SS }, // raw + smoothed profiles, for drawing
+    diag: { candles: N, oiMatched: matched, births: births.length, closeFactor: cNow },
+  };
+}
+
+const LIQ_DEFAULTS = {
+  stepMs: 900000,
+  // leverage mix assumed for new positions (weights sum to 1); tiers above a coin's max are capped at the max
+  tiers: [[5, 0.10], [10, 0.25], [20, 0.20], [25, 0.20], [50, 0.15], [100, 0.10]],
+  binPct: 0.001,     // 0.1% bins
+  rangePct: 0.25,    // histogram covers +/-25%
+  searchPct: 0.15,   // clusters searched within +/-15%
+  sigmaBins: 2.5,    // smoothing (0.25%)
+  peakWin: 5,        // a peak must be the max within +/-0.5%
+  sigFrac: 0.30,     // "significant" = at least 30% of the strongest peak on that side
+  zoneFrac: 0.5,     // cluster zone = where the profile stays above half the peak
+};
+
+if (typeof module !== 'undefined') module.exports = { liqMap, LIQ_DEFAULTS };
+</script>
+
+<script>
+(function () {
+'use strict';
+
+// ---------- config ----------
+const API = 'https://api.bybit.com';
+const WS_URL = 'wss://stream.bybit.com/v5/public/linear';
+const STEP = 900000;            // 15 minutes
+const MAX_KEEP = 1100;          // candles kept in memory per coin
+const DEFAULT_COINS = ['SOL', 'DOGE', 'SUI', 'ENA', 'WLD', 'DYDX', 'GALA', 'EGLD', 'NEAR', 'XLM', 'BLUR', 'SAND', 'AXS', 'ZIL', 'CHZ', 'GRAM', '1000PEPE', 'KAITO', 'XRP', 'ATOM', '1000BONK'];
+const MIXES = {
+  retail: { label: 'Retail mix 5–100x', tiers: [[5, 0.10], [10, 0.25], [20, 0.20], [25, 0.20], [50, 0.15], [100, 0.10]] },
+  even: { label: 'Even split 10/25/50/100x', tiers: [[10, 0.25], [25, 0.25], [50, 0.25], [100, 0.25]] }
+};
+const LOOKBACK = { '3': 288, '7': 672, '10': 1000 };
+const SIGS = [0.2, 0.3, 0.4];
+const NEAR_PCT = 1.0;           // amber when price is within 1% of a pool
+const BIGGER = 1.5;             // shade the pool that is 1.5x the other side
+const SWEEP_TTL = 30 * 60000;   // sweep tags stay on a row for 30 min
+const MINUS = '−';
+
+// ---------- helpers ----------
+const $ = (sel, root) => (root || document).querySelector(sel);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const base = (s) => s.replace(/USDT$/, '');
+const pad = (n) => (n < 10 ? '0' + n : '' + n);
+function hhmm(t) { const d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+function hhmmss(t) { const d = new Date(t); return hhmm(t) + ':' + pad(d.getSeconds()); }
+function ago(t) { const s = Math.max(0, Math.round((Date.now() - t) / 1000)); if (s < 60) return s + 's'; const m = Math.round(s / 60); return m < 60 ? m + 'm' : Math.round(m / 60) + 'h'; }
+function decimalsFor(tick) { if (!(tick > 0)) return 4; return Math.max(0, Math.min(10, Math.ceil(-Math.log10(tick) - 1e-9))); }
+function fp(st, x) { return (x == null || !isFinite(x)) ? '—' : x.toFixed(st.dec); }
+function fpct(x) { if (x == null || !isFinite(x)) return ''; const a = Math.abs(x).toFixed(1); return (a === '0.0' ? '' : (x > 0 ? '+' : MINUS)) + a + '%'; }
+function fusd(x) {
+  if (!(x > 0)) return '$0';
+  if (x >= 1e9) return '$' + (x / 1e9).toFixed(2) + 'B';
+  if (x >= 1e6) return '$' + (x / 1e6).toFixed(x >= 1e8 ? 0 : x >= 1e7 ? 1 : 2) + 'M';
+  if (x >= 1e3) return '$' + Math.round(x / 1e3) + 'K';
+  return '$' + Math.round(x);
+}
+function niceCeil(v) { const e = Math.pow(10, Math.floor(Math.log10(v))); const f = v / e; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * e; }
+
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('lodestone.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('lodestone.' + k, JSON.stringify(v)); } catch (e) { /* storage blocked: settings last for this visit only */ } }
+};
+
+function sanitizeCoins(v) {
+  const raw = Array.isArray(v) ? v : String(v || '').split(/[\s,;]+/);
+  const out = [];
+  for (const x of raw) {
+    const b = String(x).toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/USDT$/, '');
+    if (b && out.indexOf(b) < 0) out.push(b);
+  }
+  return out.slice(0, 40);
+}
+
+const settings = {
+  coins: sanitizeCoins(store.get('coins', DEFAULT_COINS)),
+  mix: store.get('mix', 'retail'),
+  lookback: String(store.get('lookback', '10')),
+  sig: Number(store.get('sig', 0.3)),
+  sort: store.get('sort', 'list')
+};
+if (!settings.coins.length) settings.coins = DEFAULT_COINS.slice();
+if (!MIXES[settings.mix]) settings.mix = 'retail';
+if (!LOOKBACK[settings.lookback]) settings.lookback = '10';
+if (SIGS.indexOf(settings.sig) < 0) settings.sig = 0.3;
+if (['list', 'near', 'lopsided'].indexOf(settings.sort) < 0) settings.sort = 'list';
+
+// ---------- state ----------
+const S = new Map();            // symbol -> coin state
+let order = [];
+let openSym = null;
+const feed = [];
+let ws = null, wsBackoff = 1000, wsDownSince = Date.now(), lastMsg = 0, reconnectTimer = null, pollMode = false;
+let hiddenAt = 0, lastSort = 0, lastSummary = 0, oiBusy = false;
+const C = {};
+
+function newState(sym) {
+  return {
+    sym: sym, status: 'loading', err: '', errAt: 0, retryable: false,
+    candles: [], oi: new Map(), lastOiT: 0, maxLev: 50, mmr: 0.01, dec: 4,
+    price: 0, chg24: null, oiVal: 0,
+    res: null, dirty: false, paint: true, calcAt: 0, busy: false, needResync: false, resyncAt: 0,
+    prevUp: null, prevDn: null, hiSince: -Infinity, loSince: Infinity, sweeps: [],
+    shown: 0, flash: '', flashUntil: 0, tagKey: '', listKey: '', el: null
+  };
+}
+
+// ---------- Bybit REST ----------
+async function api(path, tries) {
+  tries = tries || 3;
+  let err = null;
+  for (let a = 0; a < tries; a++) {
+    try {
+      const r = await fetch(API + path, { cache: 'no-store' });
+      const j = await r.json();
+      if (j && j.retCode === 0) return j.result;
+      err = new Error((j && j.retMsg) || ('HTTP ' + r.status));
+      if (j && j.retCode === 10001) break;      // bad parameters: retrying will not help
+    } catch (e) { err = e; }
+    if (a < tries - 1) await sleep(500 * (a + 1));
+  }
+  throw err;
+}
+
+function rowToCandle(r) { return { t: +r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5], q: +r[6] }; }
+
+async function loadSymbol(st) {
+  st.status = 'loading'; st.paint = true;
+  const sym = st.sym;
+  const ins = await api('/v5/market/instruments-info?category=linear&symbol=' + sym);
+  const i = ins.list && ins.list[0];
+  if (!i || i.status !== 'Trading') throw new Error('Not a live Bybit USDT perp');
+  const res = await Promise.all([
+    api('/v5/market/risk-limit?category=linear&symbol=' + sym),
+    api('/v5/market/tickers?category=linear&symbol=' + sym),
+    api('/v5/market/kline?category=linear&symbol=' + sym + '&interval=15&limit=1000')
+  ]);
+  st.maxLev = +i.leverageFilter.maxLeverage || 50;
+  st.dec = decimalsFor(+i.priceFilter.tickSize);
+  const tiers = res[0].list || [];
+  let t1 = null;
+  for (const t of tiers) if (+t.isLowestRisk === 1) { t1 = t; break; }
+  if (!t1 && tiers.length) t1 = tiers.reduce((a, b) => (+a.riskLimitValue <= +b.riskLimitValue ? a : b));
+  const mmr = t1 ? +t1.maintenanceMargin : NaN;
+  st.mmr = mmr > 0 && mmr < 0.5 ? mmr : 0.01;
+  if (res[1].list && res[1].list[0]) applyTicker(st, res[1].list[0]);
+  st.candles = (res[2].list || []).map(rowToCandle).reverse();
+  if (!st.candles.length) throw new Error('No candles returned');
+  await loadOI(st, st.candles[0].t);
+  pruneOI(st);
+  st.status = 'ready'; st.err = ''; st.dirty = true; st.paint = true;
+  subscribe([sym]);
+}
+
+async function loadOI(st, fromT) {
+  let cursor = '';
+  for (let p = 0; p < 12; p++) {
+    const r = await api('/v5/market/open-interest?category=linear&symbol=' + st.sym + '&intervalTime=15min&limit=200' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''));
+    const list = r.list || [];
+    let minT = Infinity;
+    for (const x of list) {
+      const t = +x.timestamp;
+      st.oi.set(t, +x.openInterest);
+      if (t < minT) minT = t;
+      if (t > st.lastOiT) st.lastOiT = t;
+    }
+    cursor = r.nextPageCursor;
+    if (!cursor || !list.length || minT <= fromT) break;
+  }
+}
+
+function pruneOI(st) {
+  if (!st.candles.length) return;
+  const cut = st.candles[0].t - STEP;
+  for (const t of st.oi.keys()) if (t < cut) st.oi.delete(t);
+}
+
+async function refreshOI(st) {
+  const r = await api('/v5/market/open-interest?category=linear&symbol=' + st.sym + '&intervalTime=15min&limit=4', 1);
+  for (const x of (r.list || [])) {
+    const t = +x.timestamp, v = +x.openInterest;
+    if (st.oi.get(t) !== v) { st.oi.set(t, v); st.dirty = true; }
+    if (t > st.lastOiT) st.lastOiT = t;
+  }
+}
+
+// fills a gap after the phone slept or the socket dropped
+async function resync(st) {
+  st.resyncAt = Date.now();
+  const last = st.candles.length ? st.candles[st.candles.length - 1].t : 0;
+  const nowStart = Math.floor(Date.now() / STEP) * STEP;
+  const gap = Math.max(0, Math.round((nowStart - last) / STEP));
+  const lim = Math.min(1000, gap + 4);
+  const kl = await api('/v5/market/kline?category=linear&symbol=' + st.sym + '&interval=15&limit=' + lim);
+  const rows = (kl.list || []).map(rowToCandle).reverse();
+  if (rows.length) {
+    const t0 = rows[0].t;
+    st.candles = st.candles.filter((c) => c.t < t0).concat(rows);
+    if (st.candles.length > MAX_KEEP) st.candles.splice(0, st.candles.length - MAX_KEEP);
+    for (const c of rows) { if (c.h > st.hiSince) st.hiSince = c.h; if (c.l < st.loSince) st.loSince = c.l; }
+  }
+  await loadOI(st, (rows.length ? rows[0].t : last) - STEP);
+  pruneOI(st);
+  st.needResync = false; st.dirty = true; st.paint = true;
+}
+
+function upsertCandle(st, c) {
+  const a = st.candles, last = a[a.length - 1];
+  if (!last || c.t > last.t) {
+    if (last && c.t > last.t + STEP) st.needResync = true;   // missed a candle: refill from REST
+    a.push(c);
+    if (a.length > MAX_KEEP) { a.splice(0, a.length - MAX_KEEP); pruneOI(st); }
+  } else if (c.t === last.t) {
+    a[a.length - 1] = c;
+  } else {
+    for (let i = a.length - 2; i >= 0; i--) { if (a[i].t === c.t) { a[i] = c; break; } if (a[i].t < c.t) break; }
+  }
+  if (c.t >= a[a.length - 1].t) {
+    if (c.h > st.hiSince) st.hiSince = c.h;
+    if (c.l < st.loSince) st.loSince = c.l;
+  }
+  st.dirty = true;
+}
+
+function applyTicker(st, d) {
+  if (d.lastPrice != null && +d.lastPrice > 0) {
+    const p = +d.lastPrice;
+    st.price = p;
+    if (p > st.hiSince) st.hiSince = p;
+    if (p < st.loSince) st.loSince = p;
+    // keep the live candle's range in step with every trade, so a swept level drops out at once
+    const last = st.candles[st.candles.length - 1];
+    if (last && st.status === 'ready' && last.t === Math.floor(Date.now() / STEP) * STEP) {
+      if (p > last.h) { last.h = p; st.dirty = true; }
+      if (p < last.l) { last.l = p; st.dirty = true; }
+      last.c = p;
+    }
+  }
+  if (d.price24hPcnt != null && d.price24hPcnt !== '') st.chg24 = +d.price24hPcnt;
+  if (d.openInterestValue != null && d.openInterestValue !== '') st.oiVal = +d.openInterestValue;
+  st.paint = true;
+}
+
+// ---------- model ----------
+function compute(st) {
+  const n = LOOKBACK[settings.lookback];
+  const cs = st.candles.length > n ? st.candles.slice(-n) : st.candles;
+  if (cs.length < 20 || !(st.price > 0)) return;
+  const p = Object.assign({}, LIQ_DEFAULTS, { tiers: MIXES[settings.mix].tiers, sigFrac: settings.sig, mmr: st.mmr, maxLev: st.maxLev, price: st.price });
+  const r = liqMap(cs, st.oi, p);
+  const now = Date.now();
+  if (st.prevUp && st.hiSince >= st.prevUp.px) addSweep(st, 'up', st.prevUp.px, now);
+  if (st.prevDn && st.loSince <= st.prevDn.px) addSweep(st, 'dn', st.prevDn.px, now);
+  st.prevUp = r.up.nearest; st.prevDn = r.down.nearest;
+  st.hiSince = -Infinity; st.loSince = Infinity;
+  st.res = r; st.calcAt = now; st.dirty = false; st.paint = true;
+}
+
+function addSweep(st, side, px, t) {
+  st.sweeps.push({ side: side, px: px, t: t });
+  if (st.sweeps.length > 6) st.sweeps.shift();
+  feed.unshift({ sym: st.sym, side: side, px: px, t: t, dec: st.dec });
+  if (feed.length > 12) feed.length = 12;
+  paintFeed();
+}
+
+// ---------- rows ----------
+function makeRow(st) {
+  const li = document.createElement('li');
+  const id = 'det-' + st.sym.toLowerCase();
+  li.className = 'row';
+  li.dataset.sym = st.sym;
+  li.innerHTML =
+    '<button class="rowbtn" type="button" aria-expanded="false" aria-controls="' + id + '">' +
+      '<span class="coin"><span class="name"></span><span class="tags"></span></span>' +
+      '<span class="px"><b class="price">—</b><i class="chg"></i></span>' +
+      '<span class="cl up"><span class="arrow" aria-hidden="true">▲</span><b class="cp">loading</b><i class="cd"></i></span>' +
+      '<span class="cl dn"><span class="arrow" aria-hidden="true">▼</span><b class="cp"></b><i class="cd"></i></span>' +
+      '<canvas class="strip" aria-hidden="true"></canvas>' +
+    '</button>' +
+    '<div class="detail" id="' + id + '" hidden>' +
+      '<canvas class="chart" role="img" aria-label="Estimated liquidation map within 15% of price"></canvas>' +
+      '<div class="cols">' +
+        '<div class="col"><h3 class="h-up">Above price · shorts liquidated</h3><ol class="peaks up"></ol></div>' +
+        '<div class="col"><h3 class="h-dn">Below price · longs liquidated</h3><ol class="peaks dn"></ol></div>' +
+      '</div>' +
+      '<p class="facts"></p>' +
+    '</div>';
+  const q = (s) => li.querySelector(s);
+  q('.name').textContent = base(st.sym);
+  st.el = {
+    li: li, btn: q('.rowbtn'), tags: q('.tags'), price: q('.price'), chg: q('.chg'),
+    up: q('.cl.up'), upP: q('.cl.up .cp'), upD: q('.cl.up .cd'),
+    dn: q('.cl.dn'), dnP: q('.cl.dn .cp'), dnD: q('.cl.dn .cd'),
+    strip: q('.strip'), det: q('.detail'), chart: q('.chart'), pUp: q('.peaks.up'), pDn: q('.peaks.dn'), facts: q('.facts')
+  };
+  st.el.btn.addEventListener('click', () => toggle(st.sym));
+  return li;
+}
+
+function setCl(st, box, pEl, dEl, c) {
+  if (!c) { pEl.textContent = 'none'; dEl.textContent = '≤15%'; box.classList.remove('near'); return; }
+  const d = (c.px / st.price - 1) * 100;
+  pEl.textContent = fp(st, c.px);
+  dEl.textContent = fpct(d);
+  box.classList.toggle('near', Math.abs(d) <= NEAR_PCT);
+}
+
+function paintRow(st) {
+  const el = st.el;
+  const now = Date.now();
+  if (st.price > 0) {
+    if (st.shown && st.price !== st.shown) { st.flash = st.price > st.shown ? 'tu' : 'td'; st.flashUntil = now + 700; }
+    st.shown = st.price;
+    el.price.textContent = fp(st, st.price);
+  }
+  el.price.className = 'price' + (now < st.flashUntil ? ' ' + st.flash : '');
+  if (st.chg24 != null) { el.chg.textContent = fpct(st.chg24 * 100); el.chg.className = 'chg' + (st.chg24 > 0 ? ' pos' : st.chg24 < 0 ? ' neg' : ''); }
+
+  const r = st.res;
+  el.up.classList.toggle('err', st.status === 'error');
+  if (st.status === 'error' || !r) {
+    el.upP.textContent = st.status === 'error' ? st.err : 'loading';
+    el.upD.textContent = ''; el.dnP.textContent = ''; el.dnD.textContent = '';
+    el.up.classList.remove('big', 'near'); el.dn.classList.remove('big', 'near');
+    drawStrip(st);
+    return;
+  }
+  setCl(st, el.up, el.upP, el.upD, r.up.nearest);
+  setCl(st, el.dn, el.dnP, el.dnD, r.down.nearest);
+  const su = r.up.nearest ? r.up.nearest.size : 0, sd = r.down.nearest ? r.down.nearest.size : 0;
+  el.up.classList.toggle('big', su > 0 && su >= BIGGER * sd);
+  el.dn.classList.toggle('big', sd > 0 && sd >= BIGGER * su);
+  paintTags(st);
+  drawStrip(st);
+  if (openSym === st.sym) paintDetail(st);
+}
+
+function paintTags(st) {
+  const now = Date.now();
+  const recent = st.sweeps.filter((s) => now - s.t < SWEEP_TTL).slice(-2);
+  const key = recent.map((s) => s.side + s.t).join('|') + '|' + Math.floor(now / 30000);
+  if (key === st.tagKey) return;
+  st.tagKey = key;
+  st.el.tags.textContent = '';
+  for (const s of recent) {
+    const span = document.createElement('span');
+    span.className = 'tag ' + s.side;
+    span.textContent = (s.side === 'up' ? '▲' : '▼') + ' swept ' + ago(s.t);
+    st.el.tags.appendChild(span);
+  }
+}
+
+// ---------- canvas ----------
+function setupCanvas(cv) {
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return null;
+  const dpr = Math.min(3, window.devicePixelRatio || 1);
+  if (cv._w !== w || cv._h !== h || cv._d !== dpr) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv._w = w; cv._h = h; cv._d = dpr; }
+  const ctx = cv.getContext('2d');
+  if (!ctx) return null;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return ctx;
+}
+
+function profileMax(pr, lim) {
+  let M = 0;
+  for (let k = 1; k <= lim; k++) {
+    const a = pr.SS[pr.half + k], b = pr.LS[pr.half - k];
+    if (a > M) M = a;
+    if (b > M) M = b;
+  }
+  return M;
+}
+
+// the ±15% strip: price in the middle, longs' liquidations to the left, shorts' to the right
+function drawStrip(st) {
+  const cv = st.el.strip, ctx = setupCanvas(cv);
+  if (!ctx) return;
+  const w = cv._w, h = cv._h;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = C.panel;
+  ctx.fillRect(0, 0, w, h);
+  const r = st.res;
+  if (!r || !(st.price > 0)) return;
+  const span = LIQ_DEFAULTS.searchPct, P = st.price, pr = r.prof;
+  const lim = Math.round(span / LIQ_DEFAULTS.binPct) + 10;
+  const X = (px) => ((px / P - 1) / (2 * span) + 0.5) * w;
+  const M = profileMax(pr, lim);
+  if (M > 0) {
+    const bwPx = Math.max(1, w * LIQ_DEFAULTS.binPct / (2 * span));
+    for (let k = 1; k <= lim; k++) {
+      for (let s = 0; s < 2; s++) {
+        const j = s === 0 ? pr.half + k : pr.half - k;
+        const v = s === 0 ? pr.SS[j] : pr.LS[j];
+        if (!(v > 0)) continue;
+        const x = X(pr.lo + j * pr.bw);
+        if (x < -2 || x > w + 2) continue;
+        const t = Math.sqrt(v / M);
+        const bh = Math.max(1, t * (h - 3));
+        ctx.globalAlpha = 0.25 + 0.75 * t;
+        ctx.fillStyle = s === 0 ? C.up : C.dn;
+        ctx.fillRect(x - bwPx / 2, h - bh, bwPx + 0.5, bh);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.strokeStyle = C.fg;
+  ctx.lineWidth = 1;
+  for (const c of [r.up.nearest, r.down.nearest]) {
+    if (!c) continue;
+    const x = Math.round(X(c.px)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 5); ctx.stroke();
+  }
+  const xp = Math.round(w / 2) + 0.5;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(xp, 0); ctx.lineTo(xp, h); ctx.stroke();
+}
+
+function drawChart(st) {
+  const cv = st.el.chart, ctx = setupCanvas(cv);
+  if (!ctx) return;
+  const w = cv._w, h = cv._h;
+  ctx.clearRect(0, 0, w, h);
+  const r = st.res;
+  if (!r) return;
+  const m = { l: 48, r: 12, t: 26, b: 22 };
+  const pw = w - m.l - m.r, ph = h - m.t - m.b;
+  const span = LIQ_DEFAULTS.searchPct, P = st.price, pr = r.prof;
+  const lim = Math.round(span / LIQ_DEFAULTS.binPct) + 10;
+  const X = (px) => m.l + ((px / P - 1) / (2 * span) + 0.5) * pw;
+  const M = profileMax(pr, lim);
+  ctx.lineWidth = 1;
+  ctx.font = '10px ' + C.mono;
+  if (!(M > 0)) {
+    ctx.fillStyle = C.muted; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('No open pools within 15% of price', w / 2, h / 2);
+    return;
+  }
+  const top = niceCeil(M);
+  const Y = (v) => m.t + ph - Math.min(v, top) / top * ph;
+
+  // horizontal grid, dollar labels
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (const f of [0, 0.5, 1]) {
+    const y = Math.round(Y(top * f)) + 0.5;
+    ctx.strokeStyle = C.line; ctx.beginPath(); ctx.moveTo(m.l, y); ctx.lineTo(w - m.r, y); ctx.stroke();
+    ctx.fillStyle = C.muted; ctx.fillText(f === 0 ? '$0' : fusd(top * f), m.l - 6, y);
+  }
+  // distance from price
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (const pct of [-15, -10, -5, 0, 5, 10, 15]) {
+    const x = m.l + (pct / 100 / (2 * span) + 0.5) * pw;
+    ctx.fillStyle = C.muted;
+    ctx.fillText(pct === 0 ? '0' : (pct > 0 ? '+' : MINUS) + Math.abs(pct) + '%', Math.min(Math.max(x, m.l + 14), w - m.r - 14), h - m.b + 6);
+  }
+  // nearest-cluster zones
+  const zones = [[r.up.nearest, C.upSoft], [r.down.nearest, C.dnSoft]];
+  for (const z of zones) {
+    const c = z[0];
+    if (!c) continue;
+    const x0 = X(c.zlo - pr.bw / 2), x1 = X(c.zhi + pr.bw / 2);
+    ctx.fillStyle = z[1];
+    ctx.fillRect(x0, m.t, Math.max(2, x1 - x0), ph);
+  }
+  // profiles
+  const area = (arr, sign, col) => {
+    const pts = [];
+    for (let k = 1; k <= lim; k++) {
+      const j = pr.half + sign * k;
+      if (j < 0 || j >= arr.length) break;
+      const x = X(pr.lo + j * pr.bw);
+      if (x < m.l || x > w - m.r) continue;
+      pts.push([x, Y(arr[j])]);
+    }
+    if (pts.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], Y(0));
+    for (const pt of pts) ctx.lineTo(pt[0], pt[1]);
+    ctx.lineTo(pts[pts.length - 1][0], Y(0));
+    ctx.closePath();
+    ctx.globalAlpha = 0.35; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.beginPath();
+    pts.forEach((pt, i) => (i ? ctx.lineTo(pt[0], pt[1]) : ctx.moveTo(pt[0], pt[1])));
+    ctx.strokeStyle = col; ctx.lineWidth = 1.25; ctx.stroke(); ctx.lineWidth = 1;
+  };
+  area(pr.SS, 1, C.up);
+  area(pr.LS, -1, C.dn);
+
+  const label = (text, x, y, align, color, bold) => {
+    ctx.font = (bold ? '600 ' : '') + '11px ' + C.mono;
+    const tw = ctx.measureText(text).width;
+    let left = align === 'left' ? x : align === 'right' ? x - tw : x - tw / 2;
+    left = Math.max(m.l + 2, Math.min(left, w - m.r - tw - 2));
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = color;
+    ctx.fillText(text, left, y);
+  };
+  // live price
+  const xp = Math.round(X(P)) + 0.5;
+  ctx.setLineDash([3, 3]); ctx.strokeStyle = C.fg;
+  ctx.beginPath(); ctx.moveTo(xp, m.t - 4); ctx.lineTo(xp, m.t + ph); ctx.stroke();
+  ctx.setLineDash([]);
+  label(fp(st, P), xp, 6, 'center', C.fg, true);
+  // nearest pools, and the largest one when it is further out
+  if (r.up.nearest) label('▲ ' + fp(st, r.up.nearest.px), X(r.up.nearest.px) + 4, m.t + 3, 'left', C.up, true);
+  if (r.down.nearest) label(fp(st, r.down.nearest.px) + ' ▼', X(r.down.nearest.px) - 4, m.t + 3, 'right', C.dn, true);
+  if (r.up.major && r.up.nearest && r.up.major.px !== r.up.nearest.px) label('max ' + fp(st, r.up.major.px), X(r.up.major.px), m.t + 18, 'center', C.up, false);
+  if (r.down.major && r.down.nearest && r.down.major.px !== r.down.nearest.px) label('max ' + fp(st, r.down.major.px), X(r.down.major.px), m.t + 18, 'center', C.dn, false);
+}
+
+// ---------- detail ----------
+function fillPeaks(st, ol, sd) {
+  ol.textContent = '';
+  const peaks = sd.peaks.slice(0, 6);
+  if (!peaks.length) {
+    const li = document.createElement('li'); li.className = 'empty'; li.textContent = 'No pools within 15%';
+    ol.appendChild(li);
+    return;
+  }
+  for (const pk of peaks) {
+    const li = document.createElement('li');
+    const isN = sd.nearest && pk.px === sd.nearest.px;
+    const isM = sd.major && pk.px === sd.major.px;
+    if (isN) li.className = 'nearest';
+    const b = document.createElement('b'); b.textContent = fp(st, pk.px);
+    const d = document.createElement('span'); d.textContent = fpct((pk.px / st.price - 1) * 100);
+    const s = document.createElement('span'); s.textContent = fusd(pk.size) + (isM ? ' · max' : '');
+    const meter = document.createElement('span'); meter.className = 'meter'; meter.style.setProperty('--w', Math.round(pk.rel * 100) + '%');
+    li.append(b, d, s, meter);
+    ol.appendChild(li);
+  }
+}
+
+function paintDetail(st) {
+  drawChart(st);
+  const r = st.res;
+  if (!r) return;
+  const key = st.calcAt + '|' + Math.round(Math.log(st.price) / 0.0005);
+  if (key !== st.listKey) {
+    st.listKey = key;
+    fillPeaks(st, st.el.pUp, r.up);
+    fillPeaks(st, st.el.pDn, r.down);
+  }
+  const n = Math.min(st.candles.length, LOOKBACK[settings.lookback]);
+  st.el.facts.textContent = 'Bybit open interest ' + fusd(st.oiVal) + ' · max leverage ' + st.maxLev + 'x · maintenance margin ' +
+    (st.mmr * 100).toFixed(2) + '% · ' + n + ' candles (' + (n * 15 / 1440).toFixed(1) + ' days) · map updated ' + hhmmss(st.calcAt);
+}
+
+function toggle(sym) {
+  const was = openSym;
+  if (was && S.has(was)) {
+    const o = S.get(was);
+    o.el.det.hidden = true; o.el.btn.setAttribute('aria-expanded', 'false'); o.el.li.classList.remove('open');
+  }
+  openSym = was === sym ? null : sym;
+  if (openSym) {
+    const st = S.get(sym);
+    st.el.det.hidden = false; st.el.btn.setAttribute('aria-expanded', 'true'); st.el.li.classList.add('open');
+    st.listKey = '';
+    paintDetail(st);
+  }
+}
+
+// ---------- summary, feed, sorting ----------
+function paintSummary() {
+  let up = 0, dn = 0, even = 0, best = null, ready = 0, failed = 0, minOi = Infinity;
+  for (const st of S.values()) {
+    if (st.status === 'error') failed++;
+    if (st.status === 'ready') { ready++; if (st.lastOiT && st.lastOiT < minOi) minOi = st.lastOiT; }
+    const r = st.res;
+    if (!r || !(st.price > 0)) continue;
+    const su = r.up.nearest ? r.up.nearest.size : 0, sd = r.down.nearest ? r.down.nearest.size : 0;
+    if (sd > 0 && sd >= BIGGER * su) dn++; else if (su > 0 && su >= BIGGER * sd) up++; else even++;
+    for (const pair of [[r.up.nearest, 'up'], [r.down.nearest, 'dn']]) {
+      const c = pair[0];
+      if (!c) continue;
+      const d = (c.px / st.price - 1) * 100;
+      if (!best || Math.abs(d) < Math.abs(best.d)) best = { st: st, side: pair[1], d: d };
+    }
+  }
+  $('#biasDn').textContent = dn; $('#biasUp').textContent = up; $('#biasEven').textContent = even;
+  $('#closest').textContent = best ? base(best.st.sym) + (best.side === 'up' ? ' ▲ ' : ' ▼ ') + fpct(best.d) : '—';
+  $('#oiAt').textContent = ready + failed < S.size ? 'Loading ' + (ready + failed) + '/' + S.size : (isFinite(minOi) ? 'Counted to ' + hhmm(minOi) : '—');
+  lastSummary = Date.now();
+}
+
+function paintFeed() {
+  const now = Date.now();
+  const items = feed.filter((f) => now - f.t < 2 * 3600000).slice(0, 8);
+  $('#feed').hidden = !items.length;
+  const list = $('#feedList');
+  list.textContent = '';
+  for (const f of items) {
+    const li = document.createElement('li');
+    li.className = f.side;
+    const b = document.createElement('b'); b.textContent = (f.side === 'up' ? '▲ ' : '▼ ') + base(f.sym) + ' ' + f.px.toFixed(f.dec);
+    li.append(b, document.createTextNode(' ' + hhmm(f.t)));
+    list.appendChild(li);
+  }
+}
+
+function sortVal(st) {
+  const r = st.res;
+  if (!r || !(st.price > 0)) return Infinity;
+  if (settings.sort === 'near') {
+    let best = Infinity;
+    for (const c of [r.up.nearest, r.down.nearest]) if (c) best = Math.min(best, Math.abs(c.px / st.price - 1));
+    return best;
+  }
+  if (settings.sort === 'lopsided') {
+    const u = r.up.nearest ? r.up.nearest.size : 0, d = r.down.nearest ? r.down.nearest.size : 0;
+    if (!(u > 0 && d > 0)) return Infinity;
+    return -Math.abs(Math.log(u / d));
+  }
+  return 0;
+}
+
+function applySort(force) {
+  const now = Date.now();
+  if (!force && now - lastSort < 5000) return;
+  lastSort = now;
+  const list = order.filter((s) => S.has(s));
+  if (settings.sort !== 'list') {
+    const v = new Map(list.map((s) => [s, sortVal(S.get(s))]));
+    list.sort((a, b) => { const x = v.get(a), y = v.get(b); if (x === y) return order.indexOf(a) - order.indexOf(b); return x < y ? -1 : 1; });
+  }
+  const ul = $('#ladder');
+  const cur = Array.from(ul.children).map((li) => li.dataset.sym);
+  if (cur.join() !== list.join()) for (const s of list) ul.appendChild(S.get(s).el.li);
+}
+
+function setLive() {
+  const el = $('#live');
+  let s, t;
+  if (ws && ws.readyState === 1 && Date.now() - lastMsg < 30000) { s = 'live'; t = 'Live'; }
+  else if (!navigator.onLine) { s = 'off'; t = 'Offline'; }
+  else if (pollMode) { s = 'warn'; t = 'Polling'; }
+  else { s = 'warn'; t = ws && ws.readyState === 0 ? 'Connecting' : 'Reconnecting'; }
+  el.dataset.s = s;
+  $('#liveTxt').textContent = t;
+}
+
+function paintModel() {
+  $('#model').textContent = MIXES[settings.mix].label + ' · ' + settings.lookback + '-day lookback · a cluster is a peak at least ' +
+    Math.round(settings.sig * 100) + '% as strong as the biggest on its side';
+}
+
+// ---------- live stream ----------
+function connectWS() {
+  clearTimeout(reconnectTimer);
+  if (ws) { try { ws.onclose = null; ws.onmessage = null; ws.close(); } catch (e) { /* already closed */ } ws = null; }
+  let sock;
+  try { sock = new WebSocket(WS_URL); } catch (e) { scheduleReconnect(); return; }
+  ws = sock;
+  sock.onopen = () => {
+    if (ws !== sock) return;
+    wsBackoff = 1000; wsDownSince = 0; lastMsg = Date.now();
+    subscribe(order.filter((s) => S.has(s) && S.get(s).status === 'ready'));
+  };
+  sock.onmessage = onWS;
+  sock.onclose = () => { if (ws !== sock) return; ws = null; if (!wsDownSince) wsDownSince = Date.now(); scheduleReconnect(); };
+  sock.onerror = () => { try { sock.close(); } catch (e) { /* ignore */ } };
+}
+
+function scheduleReconnect() {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(connectWS, wsBackoff);
+  wsBackoff = Math.min(30000, wsBackoff * 2);
+}
+
+function subscribe(syms) {
+  if (!ws || ws.readyState !== 1 || !syms.length) return;
+  const topics = [];
+  for (const s of syms) topics.push('tickers.' + s, 'kline.15.' + s);
+  for (let i = 0; i < topics.length; i += 10) ws.send(JSON.stringify({ op: 'subscribe', args: topics.slice(i, i + 10) }));
+}
+
+function onWS(ev) {
+  lastMsg = Date.now();
+  let m;
+  try { m = JSON.parse(ev.data); } catch (e) { return; }
+  const tp = m.topic;
+  if (!tp || !m.data) return;
+  if (tp.indexOf('tickers.') === 0) {
+    const st = S.get(tp.slice(8));
+    if (st) applyTicker(st, m.data);
+  } else if (tp.indexOf('kline.15.') === 0) {
+    const st = S.get(tp.slice(9));
+    if (!st || st.status !== 'ready' || !Array.isArray(m.data)) return;
+    for (const k of m.data) upsertCandle(st, { t: +k.start, o: +k.open, h: +k.high, l: +k.low, c: +k.close, v: +k.volume, q: +k.turnover });
+  }
+}
+
+// ---------- loops ----------
+async function loadQueue(syms) {
+  let i = 0;
+  const worker = async () => {
+    while (i < syms.length) {
+      const st = S.get(syms[i++]);
+      if (!st) continue;
+      st.busy = true;
+      try { await loadSymbol(st); } catch (e) { markError(st, e); }
+      st.busy = false;
+    }
+  };
+  const n = Math.min(5, syms.length), jobs = [];
+  for (let k = 0; k < n; k++) jobs.push(worker());
+  await Promise.all(jobs);
+}
+
+function markError(st, e) {
+  const msg = String((e && e.message) || '');
+  st.status = 'error';
+  st.retryable = !/perp/i.test(msg);
+  st.err = st.retryable ? 'retrying' : 'not on Bybit';
+  st.errAt = Date.now();
+  st.paint = true;
+}
+
+// new positions arrive in the open-interest history a little after each 15-minute close
+async function oiLoop() {
+  if (oiBusy || document.hidden) return;
+  oiBusy = true;
+  try {
+    const boundary = Math.floor(Date.now() / STEP) * STEP;
+    if (Date.now() - boundary < 20000) return;
+    for (const st of S.values()) {
+      if (st.status !== 'ready' || st.oi.has(boundary)) continue;
+      try { await refreshOI(st); } catch (e) { /* try again next round */ }
+      await sleep(80);
+    }
+  } finally { oiBusy = false; }
+}
+
+// REST fallback while the socket is down
+async function pollLoop() {
+  const down = !ws || ws.readyState !== 1;
+  pollMode = down && wsDownSince > 0 && Date.now() - wsDownSince > 20000;
+  if (!pollMode || document.hidden) return;
+  for (const st of S.values()) {
+    if (st.status !== 'ready') continue;
+    try {
+      const r = await Promise.all([
+        api('/v5/market/tickers?category=linear&symbol=' + st.sym, 1),
+        api('/v5/market/kline?category=linear&symbol=' + st.sym + '&interval=15&limit=2', 1)
+      ]);
+      for (const c of (r[1].list || []).map(rowToCandle).reverse()) upsertCandle(st, c);
+      if (r[0].list && r[0].list[0]) applyTicker(st, r[0].list[0]);
+    } catch (e) { /* next round */ }
+  }
+}
+
+function tick() {
+  const now = Date.now();
+  let busy = 0;
+  for (const st of S.values()) if (st.busy) busy++;
+  for (const st of S.values()) {
+    if (st.status === 'ready' && st.needResync && !st.busy && busy < 3 && now - st.resyncAt > 10000) {
+      busy++; st.busy = true;
+      resync(st).catch(() => {}).then(() => { st.busy = false; });
+    }
+    if (st.status === 'error' && st.retryable && !st.busy && now - st.errAt > 30000) {
+      st.busy = true;
+      loadSymbol(st).catch((e) => markError(st, e)).then(() => { st.busy = false; });
+    }
+    if (st.status === 'ready' && st.dirty && !st.busy && now - st.calcAt > 1500) compute(st);
+    if (st.flashUntil && now > st.flashUntil) { st.flashUntil = 0; st.paint = true; }
+    if (st.paint && !document.hidden) { st.paint = false; paintRow(st); }
+  }
+  if (now - lastSummary > 1000) { paintSummary(); setLive(); }
+  if (settings.sort !== 'list') applySort(false);
+}
+
+function onVisibility() {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  const away = hiddenAt ? Date.now() - hiddenAt : 0;
+  hiddenAt = 0;
+  if (!ws || ws.readyState > 1) connectWS();
+  if (away > 60000) for (const st of S.values()) if (st.status === 'ready') { st.needResync = true; st.resyncAt = 0; }
+  for (const st of S.values()) st.paint = true;
+}
+
+// ---------- settings ----------
+function fillForm() {
+  $('#coinsIn').value = settings.coins.join(', ');
+  $('#mixIn').value = settings.mix;
+  $('#lbIn').value = settings.lookback;
+  $('#sigIn').value = String(settings.sig);
+}
+
+function applyCoins() {
+  const syms = settings.coins.map((b) => b + 'USDT');
+  for (const s of Array.from(S.keys())) {
+    if (syms.indexOf(s) >= 0) continue;
+    S.get(s).el.li.remove();
+    S.delete(s);
+    if (openSym === s) openSym = null;
+  }
+  const add = [];
+  for (const s of syms) {
+    if (S.has(s)) continue;
+    const st = newState(s);
+    S.set(s, st);
+    $('#ladder').appendChild(makeRow(st));
+    add.push(s);
+  }
+  order = syms;
+  applySort(true);
+  connectWS();                    // fresh socket carries exactly the current set
+  if (add.length) loadQueue(add);
+}
+
+function applySettings() {
+  const coins = sanitizeCoins($('#coinsIn').value);
+  const mix = $('#mixIn').value, lb = $('#lbIn').value, sig = Number($('#sigIn').value);
+  const modelChanged = mix !== settings.mix || lb !== settings.lookback || sig !== settings.sig;
+  settings.mix = MIXES[mix] ? mix : 'retail';
+  settings.lookback = LOOKBACK[lb] ? lb : '10';
+  settings.sig = SIGS.indexOf(sig) >= 0 ? sig : 0.3;
+  store.set('mix', settings.mix); store.set('lookback', settings.lookback); store.set('sig', settings.sig);
+  if (coins.length && coins.join() !== settings.coins.join()) { settings.coins = coins; store.set('coins', coins); applyCoins(); }
+  if (modelChanged) for (const st of S.values()) { st.prevUp = null; st.prevDn = null; st.dirty = true; st.calcAt = 0; st.listKey = ''; }
+  paintModel();
+}
+
+function bindUI() {
+  const sortSel = $('#sort');
+  sortSel.value = settings.sort;
+  sortSel.addEventListener('change', () => { settings.sort = sortSel.value; store.set('sort', settings.sort); applySort(true); });
+  const gear = $('#gear'), form = $('#settings');
+  gear.addEventListener('click', () => {
+    const opening = form.hidden;
+    if (opening) fillForm();
+    form.hidden = !opening;
+    gear.setAttribute('aria-expanded', String(opening));
+  });
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    applySettings();
+    form.hidden = true;
+    gear.setAttribute('aria-expanded', 'false');
+  });
+  $('#resetBtn').addEventListener('click', () => {
+    $('#coinsIn').value = DEFAULT_COINS.join(', ');
+    $('#mixIn').value = 'retail'; $('#lbIn').value = '10'; $('#sigIn').value = '0.3';
+  });
+  window.addEventListener('resize', () => { for (const st of S.values()) st.paint = true; });
+  document.addEventListener('visibilitychange', onVisibility);
+}
+
+function readColors() {
+  const cs = getComputedStyle(document.documentElement);
+  for (const k of ['panel', 'line', 'fg', 'muted', 'faint', 'up', 'dn', 'warn', 'accent']) C[k] = cs.getPropertyValue('--' + k).trim();
+  C.upSoft = cs.getPropertyValue('--up-soft').trim();
+  C.dnSoft = cs.getPropertyValue('--dn-soft').trim();
+  C.mono = cs.getPropertyValue('--mono').trim() || 'monospace';
+}
+
+function boot() {
+  readColors();
+  order = settings.coins.map((b) => b + 'USDT');
+  const ul = $('#ladder');
+  for (const s of order) { const st = newState(s); S.set(s, st); ul.appendChild(makeRow(st)); }
+  bindUI();
+  paintModel();
+  $('#clock').textContent = hhmmss(Date.now());
+  connectWS();
+  loadQueue(order.slice());
+  setInterval(tick, 400);
+  setInterval(oiLoop, 15000);
+  setInterval(pollLoop, 15000);
+  setInterval(() => { if (ws && ws.readyState === 1) { try { ws.send('{"op":"ping"}'); } catch (e) { /* reconnect handles it */ } } }, 20000);
+  setInterval(() => { if (ws && ws.readyState === 1 && Date.now() - lastMsg > 45000) connectWS(); }, 10000);
+  setInterval(() => { $('#clock').textContent = hhmmss(Date.now()); }, 1000);
+  setInterval(paintFeed, 30000);
+}
+
+boot();
+})();
+</script>
+</body>
+</html>
