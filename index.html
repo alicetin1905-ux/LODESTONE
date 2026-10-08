@@ -153,6 +153,12 @@ textarea{width:100%;resize:vertical;font:13px/1.4 var(--mono)}
 .liqs li{display:grid;grid-template-columns:4.2rem 4.5rem minmax(0,1fr) 5rem;gap:8px;padding:4px 0;border-bottom:1px dashed var(--line);font:12.5px/1.2 var(--mono);font-variant-numeric:tabular-nums;color:var(--muted)}
 .liqs li .L{color:var(--dn)} .liqs li .S{color:var(--up)}
 .facts{margin:0;font-size:12px;color:var(--muted)}
+.heat{display:block;width:100%;height:220px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.walls{display:flex;flex-direction:column;gap:6px}
+.wall-line{margin:0;display:flex;flex-wrap:wrap;gap:6px;align-items:center;font:12.5px/1.3 var(--mono);color:var(--muted)}
+.wall{background:var(--raise);border-radius:999px;padding:3px 8px;color:var(--fg);font-variant-numeric:tabular-nums}
+.wall.at-pool{background:var(--warn-soft);color:var(--warn)}
+.flow .note{flex-basis:100%}
 
 .sect{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
 .sect summary{cursor:pointer;font-weight:600}
@@ -221,6 +227,10 @@ textarea{width:100%;resize:vertical;font:13px/1.4 var(--mono)}
     <div class="field"><label>Alerts</label><label class="check"><input type="checkbox" id="alertIn"> Alert on near pools and sweeps</label></div>
     <div class="field"><label for="alertPctIn">Alert when price is within</label><select id="alertPctIn"><option value="0.3">0.3% of a pool</option><option value="0.5">0.5% of a pool</option><option value="1">1% of a pool</option></select></div>
     <div class="field"><label>Sound</label><label class="check"><input type="checkbox" id="soundIn"> Play a sound</label></div>
+    <h2>Signals and device</h2>
+    <div class="field"><label>Sweep signals</label><label class="check"><input type="checkbox" id="sigOnIn"> Signal and paper-trade sweep reversals</label></div>
+    <div class="field"><label>Signal filter</label><label class="check"><input type="checkbox" id="needLiqIn"> Only when real liquidations hit</label></div>
+    <div class="field"><label>Screen</label><label class="check"><input type="checkbox" id="awakeIn"> Keep screen awake</label><small>Turn on for a Mac or phone left logging.</small></div>
     <div class="actions"><button class="btn primary" type="submit">Apply</button><button class="btn" type="button" id="testBtn">Send test alert</button><button class="btn" type="button" id="resetBtn">Restore defaults</button><span class="note" id="testNote"></span></div>
   </form>
 
@@ -234,6 +244,19 @@ textarea{width:100%;resize:vertical;font:13px/1.4 var(--mono)}
   </div>
 
   <ul class="ladder" id="ladder" aria-label="Coins"></ul>
+
+  <details class="sect" id="paperBox" open>
+    <summary>Signals and paper account</summary>
+    <p class="note">A signal fires when a 15-minute candle sweeps a nearest pool and closes back inside it. The paper account fades it: entry at the close, stop just beyond the wick, target 2× the risk, closed after 6 hours. It risks 1% of a $1,000 account per trade with Bybit taker fees. Saved in this browser; trades only while this page is open.</p>
+    <div id="paperBody"></div>
+    <div class="actions"><button class="btn" type="button" id="paperReset">Reset paper account</button></div>
+  </details>
+
+  <details class="sect" id="btBox" open>
+    <summary>Backtest · last 7 days</summary>
+    <div id="btBody"></div>
+    <div class="actions"><button class="btn" type="button" id="btRun">Run again</button></div>
+  </details>
 
   <details class="sect" id="recordBox">
     <summary>Track record of sweeps</summary>
@@ -488,7 +511,10 @@ const settings = {
   binance: store.get('binance', true) !== false,
   alerts: store.get('alerts', true) !== false,
   alertPct: Number(store.get('alertPct', 0.5)),
-  sound: store.get('sound', true) !== false
+  sound: store.get('sound', true) !== false,
+  signals: store.get('signals', true) !== false,
+  needLiqs: store.get('needLiqs', true) !== false,
+  awake: store.get('awake', false) === true
 };
 if (!settings.coins.length) settings.coins = DEFAULT_COINS.slice();
 if (!MIXES[settings.mix]) settings.mix = 'retail';
@@ -709,6 +735,7 @@ function applyTicker(st, d) {
       if (p < last.l) { last.l = p; st.dirty = true; }
       last.c = p;
     }
+    if (st.status === 'ready') checkPaper(st);
   }
   if (d.price24hPcnt != null && d.price24hPcnt !== '') st.chg24 = +d.price24hPcnt;
   if (d.openInterestValue != null && d.openInterestValue !== '') st.oiVal = +d.openInterestValue;
@@ -752,6 +779,7 @@ function compute(st) {
   st.prevUp = r.up.nearest; st.prevDn = r.down.nearest;
   st.hiSince = -Infinity; st.loSince = Infinity;
   st.res = r; st.calcAt = now; st.dirty = false; st.paint = true;
+  snapPools(st);
   checkNear(st);
 }
 
@@ -920,8 +948,12 @@ function makeRow(st) {
     '</button>' +
     '<div class="detail" id="' + id + '" hidden>' +
       '<div class="posn"></div>' +
+      '<div class="posn flow"></div>' +
       '<div class="candles" role="img" aria-label="15-minute candles with the nearest pools"></div>' +
+      '<div class="col"><h3>Short-term vs long-term pools</h3><div class="hz"></div></div>' +
       '<canvas class="chart" role="img" aria-label="Estimated liquidation map within 15% of price"></canvas>' +
+      '<div class="col"><h3>Heatmap · last 3 days</h3><canvas class="heat" role="img" aria-label="How the pools built up and were cleared over the last 3 days"></canvas></div>' +
+      '<div class="col"><h3>Order-book walls (Bybit)</h3><div class="walls"></div></div>' +
       '<div class="cols">' +
         '<div class="col"><h3 class="h-up">Above price · shorts liquidated</h3><ol class="peaks up"></ol></div>' +
         '<div class="col"><h3 class="h-dn">Below price · longs liquidated</h3><ol class="peaks dn"></ol></div>' +
@@ -936,7 +968,8 @@ function makeRow(st) {
     up: q('.cl.up'), upP: q('.cl.up .cp'), upD: q('.cl.up .cd'),
     dn: q('.cl.dn'), dnP: q('.cl.dn .cp'), dnD: q('.cl.dn .cd'),
     strip: q('.strip'), det: q('.detail'), posn: q('.posn'), candles: q('.candles'), chart: q('.chart'),
-    pUp: q('.peaks.up'), pDn: q('.peaks.dn'), liqs: q('.liqs'), facts: q('.facts')
+    pUp: q('.peaks.up'), pDn: q('.peaks.dn'), liqs: q('.liqs'), facts: q('.facts'),
+    flow: q('.flow'), hz: q('.hz'), heat: q('.heat'), walls: q('.walls')
   };
   st.el.btn.addEventListener('click', () => toggle(st.sym));
   return li;
@@ -993,7 +1026,8 @@ function paintTags(st) {
   const l5 = liqSum(st, 5 * 60000, 'L'), s5 = liqSum(st, 5 * 60000, 'S');
   const big = Math.max(25000, st.oiVal * 0.0005);
   const cr = crowd(st);
-  const key = recent.map((s) => s.side + s.t).join('|') + '|' + Math.floor(now / 30000) + '|' + (l5 >= big ? Math.round(l5 / 1000) : 0) + '|' + (s5 >= big ? Math.round(s5 / 1000) : 0) + '|' + cr;
+  const pr = pressureTag(st);
+  const key = pr + '|' + recent.map((s) => s.side + s.t).join('|') + '|' + Math.floor(now / 30000) + '|' + (l5 >= big ? Math.round(l5 / 1000) : 0) + '|' + (s5 >= big ? Math.round(s5 / 1000) : 0) + '|' + cr;
   if (key === st.tagKey) return;
   st.tagKey = key;
   const tags = st.el.tags;
@@ -1003,6 +1037,7 @@ function paintTags(st) {
   if (l5 >= big) add('dn', '⚡ longs ' + fusd(l5));
   if (s5 >= big) add('up', '⚡ shorts ' + fusd(s5));
   if (cr) add('warn', 'crowded ' + cr);
+  if (pr) add(pr, pr === 'up' ? 'buyers pushing to ▲' : 'sellers pushing to ▼');
 }
 
 // ---------- canvas ----------
@@ -1211,6 +1246,7 @@ function updateCandles(st) {
       if (r.down.nearest) want.push([r.down.nearest.px, C.dn, 0, '▼ pool ' + fusd(r.down.nearest.size)]);
       if (r.up.major && r.up.nearest && r.up.major.px !== r.up.nearest.px) want.push([r.up.major.px, C.up, 2, '▲ max ' + fusd(r.up.major.size)]);
       if (r.down.major && r.down.nearest && r.down.major.px !== r.down.nearest.px) want.push([r.down.major.px, C.dn, 2, '▼ max ' + fusd(r.down.major.size)]);
+      if (st.walls) for (const wl of st.walls.asks.concat(st.walls.bids)) want.push([wl.px, C.muted, 1, 'wall ' + fusd(wl.usd)]);
       const near = [r.up.nearest, r.down.nearest].filter(Boolean).map((c) => c.px);
       dc.span = near.length ? [Math.min.apply(null, near), Math.max.apply(null, near)] : null;
       const key = want.map((x) => x[0].toFixed(st.dec) + x[3]).join('|');
@@ -1295,6 +1331,9 @@ function paintDetail(st) {
   drawChart(st);
   updateCandles(st);
   fillLiqs(st);
+  paintWalls(st);
+  if (Date.now() - (st.flowAt || 0) > 2000) { st.flowAt = Date.now(); paintPressure(st); }
+  if (st.heat && st.heat.price && !st.heatBusy) drawHeatmap(st);
   const r = st.res;
   if (!r) return;
   const key = st.calcAt + '|' + Math.round(Math.log(st.price) / 0.0005);
@@ -1322,7 +1361,7 @@ function toggle(sym) {
     const st = S.get(sym);
     st.el.det.hidden = false; st.el.btn.setAttribute('aria-expanded', 'true'); st.el.li.classList.add('open');
     st.listKey = ''; st.liqKey = '';
-    if (st.status === 'ready') openCandles(st);
+    if (st.status === 'ready') { openCandles(st); buildHorizons(st); buildHeatmap(st); st.walls = null; st.wallKey = 'x'; refreshBook(); }
     paintDetail(st);
   }
 }
@@ -1453,7 +1492,7 @@ function scheduleReconnect() {
 function subscribe(syms) {
   if (!ws || ws.readyState !== 1 || !syms.length) return;
   const topics = [];
-  for (const s of syms) topics.push('tickers.' + s, 'kline.15.' + s, 'allLiquidation.' + s);
+  for (const s of syms) topics.push('tickers.' + s, 'kline.15.' + s, 'allLiquidation.' + s, 'publicTrade.' + s);
   for (let i = 0; i < topics.length; i += 10) ws.send(JSON.stringify({ op: 'subscribe', args: topics.slice(i, i + 10) }));
 }
 
@@ -1469,7 +1508,15 @@ function onWS(ev) {
   } else if (tp.indexOf('kline.15.') === 0) {
     const st = S.get(tp.slice(9));
     if (!st || st.status !== 'ready' || !Array.isArray(m.data)) return;
-    for (const k of m.data) upsertCandle(st, { t: +k.start, o: +k.open, h: +k.high, l: +k.low, c: +k.close, v: +k.volume, q: +k.turnover });
+    for (const k of m.data) {
+      const c = { t: +k.start, o: +k.open, h: +k.high, l: +k.low, c: +k.close, v: +k.volume, q: +k.turnover };
+      upsertCandle(st, c);
+      if (k.confirm) onCandleClosed(st, c);
+    }
+  } else if (tp.indexOf('publicTrade.') === 0) {
+    const st = S.get(tp.slice(12));
+    if (!st || !Array.isArray(m.data)) return;
+    for (const x of m.data) addTrade(st, x.S === 'Buy', +x.v * +x.p, +x.T || Date.now());
   } else if (tp.indexOf('allLiquidation.') === 0) {
     const st = S.get(tp.slice(15));
     if (!st || !Array.isArray(m.data)) return;
@@ -1588,6 +1635,11 @@ function tick() {
   }
   if (now - lastSummary > 1000) { paintSummary(); setLive(); }
   if (settings.sort !== 'list') applySort(false);
+  if (paper.open.length) paintPaper();
+  if (!btAuto && S.size && Array.from(S.values()).every((s) => s.status !== 'loading') && Array.from(S.values()).some((s) => s.status === 'ready')) {
+    btAuto = true;
+    setTimeout(runBacktest, 3000);
+  }
 }
 
 function onVisibility() {
@@ -1599,6 +1651,7 @@ function onVisibility() {
   if (away > 60000) for (const st of S.values()) if (st.status === 'ready') { st.needResync = true; st.resyncAt = 0; }
   for (const st of S.values()) { st.paint = true; st.tagKey = ''; }
   paintSoundBtn();
+  applyWake();
 }
 
 // ---------- settings ----------
@@ -1611,6 +1664,9 @@ function fillForm() {
   $('#alertIn').checked = settings.alerts;
   $('#alertPctIn').value = String(settings.alertPct);
   $('#soundIn').checked = settings.sound;
+  $('#sigOnIn').checked = settings.signals;
+  $('#needLiqIn').checked = settings.needLiqs;
+  $('#awakeIn').checked = settings.awake;
   $('#testNote').textContent = '';
 }
 
@@ -1648,7 +1704,11 @@ function applySettings() {
   const ap = Number($('#alertPctIn').value);
   settings.alertPct = ALERT_PCTS.indexOf(ap) >= 0 ? ap : 0.5;
   settings.sound = $('#soundIn').checked;
-  for (const k of ['mix', 'lookback', 'sig', 'binance', 'alerts', 'alertPct', 'sound']) store.set(k, settings[k]);
+  settings.signals = $('#sigOnIn').checked;
+  settings.needLiqs = $('#needLiqIn').checked;
+  settings.awake = $('#awakeIn').checked;
+  for (const k of ['mix', 'lookback', 'sig', 'binance', 'alerts', 'alertPct', 'sound', 'signals', 'needLiqs', 'awake']) store.set(k, settings[k]);
+  applyWake();
   if (settings.alerts && settings.sound) unlockAudio();      // the Apply tap counts as the gesture iOS needs
   if (coins.length && coins.join() !== settings.coins.join()) { settings.coins = coins; store.set('coins', coins); applyCoins(); }
   if (modelChanged) {
@@ -1659,6 +1719,7 @@ function applySettings() {
   }
   paintModel();
   paintSoundBtn();
+  paintPaper(true);
 }
 
 function bindUI() {
@@ -1682,6 +1743,7 @@ function bindUI() {
     $('#coinsIn').value = DEFAULT_COINS.join(', ');
     $('#mixIn').value = 'retail'; $('#lbIn').value = '10'; $('#sigIn').value = '0.3';
     $('#binIn').checked = true; $('#alertIn').checked = true; $('#alertPctIn').value = '0.5'; $('#soundIn').checked = true;
+    $('#sigOnIn').checked = true; $('#needLiqIn').checked = true; $('#awakeIn').checked = false;
   });
   $('#testBtn').addEventListener('click', () => {
     unlockAudio();
@@ -1691,6 +1753,8 @@ function bindUI() {
   });
   $('#soundBtn').addEventListener('click', unlockAudio);
   $('#recClear').addEventListener('click', () => { record = []; saveRecord(); paintRecord(); });
+  $('#btRun').addEventListener('click', () => { runBacktest(); });
+  $('#paperReset').addEventListener('click', () => { paper = { start: 1000, equity: 1000, open: [], trades: [] }; savePaper(); paintPaper(true); });
   window.addEventListener('resize', () => { for (const st of S.values()) st.paint = true; });
   document.addEventListener('visibilitychange', onVisibility);
 }
@@ -1725,6 +1789,505 @@ function boot() {
   setInterval(() => { if (ws && ws.readyState === 1 && Date.now() - lastMsg > 45000) connectWS(); }, 10000);
   setInterval(() => { $('#clock').textContent = hhmmss(Date.now()); }, 1000);
   setInterval(() => { paintFeed(); paintLiqFeed(); }, 30000);
+  setInterval(refreshBook, 4000);
+  paintPaper(true);
+  paintBacktest();
+  applyWake();
+}
+
+
+// =====================================================================
+// v3 additions: background worker (backtest + heatmap), horizons, order-book walls,
+// buying/selling pressure, sweep-reversal signals with a paper account, keep-awake.
+// =====================================================================
+
+// ---------- background worker: same model source as the page ----------
+function workerMain() {
+  /* global liqMap, LIQ_DEFAULTS */
+  function toMaps(venues) { return venues.map((arr) => new Map(arr)); }
+  function backtest(job) {
+    const c = job.candles, venues = toMaps(job.venues), N = c.length;
+    const look = job.look, step = 4, testFrom = Math.max(look >> 1, N - job.testCandles);
+    const sweeps = [], trades = [];
+    let lastUp = 0, lastDn = 0, busyUntil = -1;
+    for (let i = testFrom; i < N - 2; i += step) {
+      const win = c.slice(Math.max(0, i - look + 1), i + 1);
+      const p = Object.assign({}, LIQ_DEFAULTS, job.params, { price: c[i].c });
+      const r = liqMap(win, venues, p);
+      const up = r.up.nearest, dn = r.down.nearest;
+      for (let j = i + 1; j <= Math.min(i + step, N - 1); j++) {
+        const hitUp = up && c[j].h >= up.px && Math.abs(up.px / lastUp - 1) > 0.004;
+        const hitDn = dn && c[j].l <= dn.px && Math.abs(dn.px / lastDn - 1) > 0.004;
+        if (hitUp && hitDn) break;                       // both sides in one candle: ambiguous, skip
+        if (!hitUp && !hitDn) continue;
+        const side = hitUp ? 'up' : 'dn', pool = hitUp ? up : dn;
+        if (hitUp) lastUp = pool.px; else lastDn = pool.px;
+        const rejected = side === 'up' ? c[j].c < pool.px : c[j].c > pool.px;
+        const r15 = (c[j].c / pool.px - 1) * 100;
+        const r60 = j + 4 < N ? (c[j + 4].c / pool.px - 1) * 100 : null;
+        sweeps.push({ t: c[j].t, side: side, px: pool.px, size: pool.size, rejected: rejected, r15: r15, r60: r60 });
+        // the signal rule: sweep, then close back inside -> fade it, stop beyond the wick, target 2R
+        if (rejected && j > busyUntil && j + 1 < N) {
+          const tr = simTrade(c, j, side === 'up' ? 'short' : 'long', job.fee);
+          if (tr) { trades.push(tr); busyUntil = tr.exitIdx; }
+        }
+        break;
+      }
+    }
+    return { sweeps: sweeps, trades: trades };
+  }
+  function simTrade(c, j, dir, fee) {
+    const entry = c[j].c;
+    const stop = dir === 'short' ? c[j].h * 1.001 : c[j].l * 0.999;
+    const risk = Math.abs(stop - entry);
+    if (!(risk > 0) || risk / entry > 0.05) return null;
+    const target = dir === 'short' ? entry - 2 * risk : entry + 2 * risk;
+    const feeR = (2 * fee * entry) / risk;
+    for (let k = j + 1; k < c.length && k <= j + 24; k++) {
+      const hitStop = dir === 'short' ? c[k].h >= stop : c[k].l <= stop;
+      const hitTgt = dir === 'short' ? c[k].l <= target : c[k].h >= target;
+      if (hitStop) return { t: c[j].t, dir: dir, entry: entry, R: -1 - feeR, exitIdx: k, how: 'stop' };
+      if (hitTgt) return { t: c[j].t, dir: dir, entry: entry, R: 2 - feeR, exitIdx: k, how: 'target' };
+    }
+    const k = Math.min(c.length - 1, j + 24);
+    if (k <= j) return null;
+    const R = (dir === 'short' ? entry - c[k].c : c[k].c - entry) / risk - feeR;
+    return { t: c[j].t, dir: dir, entry: entry, R: R, exitIdx: k, how: k === j + 24 ? 'time' : 'open' };
+  }
+  function heatmap(job) {
+    const c = job.candles, venues = toMaps(job.venues), N = c.length, cols = [];
+    for (let i = N - 1 - (job.cols - 1) * 4; i <= N - 1; i += 4) {
+      if (i < 50) { cols.push(null); continue; }
+      const win = c.slice(Math.max(0, i - job.look + 1), i + 1);
+      // map at that hour (centred on that hour's price), re-gridded onto today's price axis
+      const r = liqMap(win, venues, Object.assign({}, LIQ_DEFAULTS, job.params, { price: c[i].c }));
+      const lim = Math.round(LIQ_DEFAULTS.searchPct / LIQ_DEFAULTS.binPct), pr = r.prof;
+      const col = new Float32Array(2 * lim + 1);
+      for (let j = 0; j < pr.SS.length; j++) {
+        const v = pr.SS[j] + pr.LS[j];
+        if (!(v > 0)) continue;
+        const k = Math.round(((pr.lo + j * pr.bw) / job.price - 1) / LIQ_DEFAULTS.binPct) + lim;
+        if (k >= 0 && k <= 2 * lim) col[k] += v;
+      }
+      cols.push({ t: c[i].t, close: c[i].c, v: col });
+    }
+    return { cols: cols };
+  }
+  self.onmessage = (e) => {
+    const job = e.data;
+    try {
+      const out = job.kind === 'backtest' ? backtest(job) : heatmap(job);
+      self.postMessage({ id: job.id, ok: true, out: out });
+    } catch (err) { self.postMessage({ id: job.id, ok: false, err: String(err) }); }
+  };
+}
+let worker = null, jobSeq = 0;
+const jobs = new Map();
+function getWorker() {
+  if (worker) return worker;
+  try {
+    const src = document.getElementById('core').textContent + '\n;(' + workerMain.toString() + ')();';
+    worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    worker.onmessage = (e) => { const j = jobs.get(e.data.id); if (!j) return; jobs.delete(e.data.id); e.data.ok ? j.res(e.data.out) : j.rej(new Error(e.data.err)); };
+  } catch (e) { worker = null; }
+  return worker;
+}
+function runJob(job) {
+  const w = getWorker();
+  if (!w) return Promise.reject(new Error('Background workers are not available'));
+  job.id = ++jobSeq;
+  return new Promise((res, rej) => { jobs.set(job.id, { res: res, rej: rej }); w.postMessage(job); });
+}
+function venuesOf(st) {
+  const v = [Array.from(st.oi.entries())];
+  if (settings.binance && st.binStatus === 'ok' && st.bin) v.push(Array.from(st.bin.entries()));
+  return v;
+}
+function modelParams(st) { return { tiers: MIXES[settings.mix].tiers, sigFrac: settings.sig, mmr: st.mmr, maxLev: st.maxLev }; }
+
+// ---------- 1. backtest ----------
+const FEE = 0.00055;
+let btAuto = false;
+let bt = { running: false, done: 0, total: 0, results: new Map(), at: 0 };
+async function runBacktest() {
+  if (bt.running) return;
+  const syms = order.filter((s) => S.has(s) && S.get(s).status === 'ready');
+  if (!syms.length) return;
+  bt = { running: true, done: 0, total: syms.length, results: new Map(), at: 0 };
+  paintBacktest();
+  for (const s of syms) {
+    const st = S.get(s);
+    try {
+      const out = await runJob({ kind: 'backtest', candles: st.candles.slice(-1000), venues: venuesOf(st), params: modelParams(st), look: Math.min(672, LOOKBACK[settings.lookback]), testCandles: 672, fee: FEE });
+      bt.results.set(s, out);
+    } catch (e) { bt.results.set(s, { sweeps: [], trades: [], err: e.message }); }
+    bt.done++;
+    paintBacktest();
+  }
+  bt.running = false; bt.at = Date.now();
+  paintBacktest();
+}
+function statsOf(sweeps, trades) {
+  const rej = sweeps.filter((x) => x.rejected).length;
+  const d60 = sweeps.filter((x) => x.r60 != null);
+  const rev60 = d60.filter((x) => (x.side === 'up' ? x.r60 < 0 : x.r60 > 0)).length;
+  const sumR = trades.reduce((a, t) => a + t.R, 0);
+  const wins = trades.filter((t) => t.R > 0).length;
+  return { n: sweeps.length, rej: rej, rev60: rev60, n60: d60.length, trades: trades.length, wins: wins, sumR: sumR };
+}
+function paintBacktest() {
+  const box = $('#btBody');
+  if (!box) return;
+  box.textContent = '';
+  const note = document.createElement('p'); note.className = 'note';
+  if (bt.running) note.textContent = 'Replaying the last 7 days… ' + bt.done + '/' + bt.total + ' coins';
+  else if (!bt.at) note.textContent = 'Replays the model hour by hour over the last 7 days of 15-minute candles, logs every sweep of a nearest pool, and tests the signal rule on each one. Runs on this device; takes a few seconds per coin.';
+  else note.textContent = 'Last 7 days, replayed at ' + hhmm(bt.at) + '. Sweep = price traded through a nearest pool. Rejected = that candle closed back inside. Signal = fade a rejected sweep, stop just beyond the wick, target 2R, closed after 6 h, fees included.';
+  box.appendChild(note);
+  if (!bt.results.size) return;
+  let allS = [], allT = [];
+  for (const v of bt.results.values()) { allS = allS.concat(v.sweeps); allT = allT.concat(v.trades); }
+  const a = statsOf(allS, allT);
+  const cells = [
+    ['Sweeps', String(a.n)],
+    ['Closed back inside', a.n ? Math.round(100 * a.rej / a.n) + '%' : '—'],
+    ['Reversed after 60m', a.n60 ? Math.round(100 * a.rev60 / a.n60) + '%' : '—'],
+    ['Signal trades', String(a.trades)],
+    ['Win rate', a.trades ? Math.round(100 * a.wins / a.trades) + '%' : '—'],
+    ['Total / avg R', a.trades ? a.sumR.toFixed(1) + 'R / ' + (a.sumR / a.trades).toFixed(2) + 'R' : '—']
+  ];
+  const grid = document.createElement('div'); grid.className = 'rec-stats';
+  for (const c of cells) { const d = document.createElement('div'); d.innerHTML = '<span class="k"></span><span class="v"></span>'; d.children[0].textContent = c[0]; d.children[1].textContent = c[1]; grid.appendChild(d); }
+  box.appendChild(grid);
+  const wrap = document.createElement('div'); wrap.className = 'tablewrap';
+  const tbl = document.createElement('table'); tbl.className = 'rec';
+  tbl.innerHTML = '<thead><tr><th>Coin</th><th>Sweeps</th><th>Inside</th><th>Rev 60m</th><th>Trades</th><th>Win</th><th>Total R</th></tr></thead>';
+  const tb = document.createElement('tbody');
+  const rows = Array.from(bt.results.entries()).map(([s, v]) => [s, statsOf(v.sweeps, v.trades)]).sort((x, y) => y[1].sumR - x[1].sumR);
+  for (const [s, v] of rows) {
+    const tr = document.createElement('tr');
+    const vals = [base(s), v.n, v.n ? Math.round(100 * v.rej / v.n) + '%' : '—', v.n60 ? Math.round(100 * v.rev60 / v.n60) + '%' : '—', v.trades, v.trades ? Math.round(100 * v.wins / v.trades) + '%' : '—', v.trades ? v.sumR.toFixed(1) + 'R' : '—'];
+    vals.forEach((x, i) => { const td = document.createElement('td'); td.textContent = x; if (i === 6 && v.trades) td.className = v.sumR >= 0 ? 'rev' : 'cont'; tr.appendChild(td); });
+    tb.appendChild(tr);
+  }
+  tbl.appendChild(tb); wrap.appendChild(tbl); box.appendChild(wrap);
+}
+
+// ---------- 2. live signals + paper account ----------
+let paper = store.get('paper', null);
+if (!paper || typeof paper !== 'object' || !Array.isArray(paper.trades)) paper = { start: 1000, equity: 1000, open: [], trades: [] };
+function savePaper() { store.set('paper', paper); }
+function snapPools(st) {
+  const cur = Math.floor(Date.now() / STEP) * STEP;
+  if (!st.poolSnap) st.poolSnap = new Map();
+  if (!st.poolSnap.has(cur) && st.res) {
+    st.poolSnap.set(cur, { up: st.res.up.nearest, dn: st.res.down.nearest });
+    for (const k of st.poolSnap.keys()) if (k < cur - 4 * STEP) st.poolSnap.delete(k);
+  }
+}
+function onCandleClosed(st, c) {
+  if (!settings.signals || !st.poolSnap) return;
+  if (st.lastSignalT === c.t) return;
+  const pools = st.poolSnap.get(c.t);
+  if (!pools) return;
+  let dir = null, pool = null;
+  if (pools.up && c.h >= pools.up.px && c.c < pools.up.px) { dir = 'short'; pool = pools.up; }
+  else if (pools.dn && c.l <= pools.dn.px && c.c > pools.dn.px) { dir = 'long'; pool = pools.dn; }
+  if (!dir) return;
+  const liq = liqSum(st, 0, dir === 'short' ? 'S' : 'L', c.t, c.t + STEP);
+  const need = Math.max(10000, st.oiVal * 0.0001);
+  if (settings.needLiqs && liq < need) return;
+  st.lastSignalT = c.t;
+  const entry = c.c;
+  const stop = dir === 'short' ? c.h * 1.001 : c.l * 0.999;
+  const risk = Math.abs(stop - entry);
+  if (!(risk > 0) || risk / entry > 0.05) return;
+  const target = dir === 'short' ? entry - 2 * risk : entry + 2 * risk;
+  const word = dir === 'short' ? 'SHORT' : 'LONG';
+  alert_(dir === 'short' ? 'dn' : 'up', base(st.sym) + ' ' + word + ' signal: swept the ' + (dir === 'short' ? '▲' : '▼') + ' pool at ' + fp(st, pool.px) +
+    ' and closed back inside. Entry ' + fp(st, entry) + ', stop ' + fp(st, stop) + ', target ' + fp(st, target) + (liq ? ' · ' + fusd(liq) + ' liquidated' : ''));
+  if (paper.open.some((p) => p.sym === st.sym)) return;
+  const qty = (paper.equity * 0.01) / risk;                 // risk 1% of equity per trade
+  paper.open.push({ sym: st.sym, dir: dir, entry: entry, stop: stop, target: target, qty: qty, t: Date.now(), dec: st.dec, liq: liq });
+  savePaper(); paintPaper();
+}
+function checkPaper(st) {
+  if (!paper.open.length || !(st.price > 0)) return;
+  let changed = false;
+  for (const p of paper.open.slice()) {
+    if (p.sym !== st.sym) continue;
+    const px = st.price;
+    const hitStop = p.dir === 'short' ? px >= p.stop : px <= p.stop;
+    const hitTgt = p.dir === 'short' ? px <= p.target : px >= p.target;
+    const timeUp = Date.now() - p.t > 6 * 3600000;
+    if (!hitStop && !hitTgt && !timeUp) continue;
+    const exit = hitStop ? p.stop : hitTgt ? p.target : px;
+    const gross = (p.dir === 'short' ? p.entry - exit : exit - p.entry) * p.qty;
+    const fees = FEE * (p.entry + exit) * p.qty;
+    const pnl = gross - fees;
+    const R = pnl / (Math.abs(p.entry - p.stop) * p.qty);
+    paper.equity += pnl;
+    paper.open.splice(paper.open.indexOf(p), 1);
+    paper.trades.unshift({ sym: p.sym, dir: p.dir, entry: p.entry, exit: exit, pnl: pnl, R: R, t: p.t, tx: Date.now(), dec: p.dec, how: hitStop ? 'stop' : hitTgt ? 'target' : '6h' });
+    if (paper.trades.length > 300) paper.trades.length = 300;
+    toast(pnl >= 0 ? 'up' : 'dn', 'Paper ' + p.dir + ' ' + base(p.sym) + ' closed at ' + exit.toFixed(p.dec) + ' (' + (hitStop ? 'stop' : hitTgt ? 'target' : '6 h') + '): ' + (pnl >= 0 ? '+' : MINUS) + '$' + Math.abs(pnl).toFixed(2));
+    changed = true;
+  }
+  if (changed) { savePaper(); paintPaper(); }
+}
+let paperPaintAt = 0;
+function paintPaper(force) {
+  const box = $('#paperBody');
+  if (!box) return;
+  const now = Date.now();
+  if (!force && now - paperPaintAt < 1500) return;
+  paperPaintAt = now;
+  box.textContent = '';
+  let openPnl = 0;
+  for (const p of paper.open) { const st = S.get(p.sym); if (st && st.price > 0) openPnl += (p.dir === 'short' ? p.entry - st.price : st.price - p.entry) * p.qty; }
+  const n = paper.trades.length, wins = paper.trades.filter((t) => t.pnl > 0).length, sumR = paper.trades.reduce((a, t) => a + t.R, 0);
+  const cells = [
+    ['Equity', '$' + (paper.equity + openPnl).toFixed(2)],
+    ['Return', fpct(((paper.equity + openPnl) / paper.start - 1) * 100, 2) || '0.0%'],
+    ['Open trades', String(paper.open.length)],
+    ['Closed trades', String(n)],
+    ['Win rate', n ? Math.round(100 * wins / n) + '%' : '—'],
+    ['Avg R', n ? (sumR / n).toFixed(2) + 'R' : '—']
+  ];
+  const grid = document.createElement('div'); grid.className = 'rec-stats';
+  for (const c of cells) { const d = document.createElement('div'); d.innerHTML = '<span class="k"></span><span class="v"></span>'; d.children[0].textContent = c[0]; d.children[1].textContent = c[1]; grid.appendChild(d); }
+  box.appendChild(grid);
+  const wrap = document.createElement('div'); wrap.className = 'tablewrap';
+  const tbl = document.createElement('table'); tbl.className = 'rec';
+  tbl.innerHTML = '<thead><tr><th>Opened</th><th>Coin</th><th>Side</th><th>Entry</th><th>Stop / target</th><th>Result</th></tr></thead>';
+  const tb = document.createElement('tbody');
+  const addRow = (vals, cls) => { const tr = document.createElement('tr'); vals.forEach((x, i) => { const td = document.createElement('td'); td.textContent = x; if (cls[i]) td.className = cls[i]; tr.appendChild(td); }); tb.appendChild(tr); };
+  for (const p of paper.open) {
+    const st = S.get(p.sym), live = st && st.price > 0 ? (p.dir === 'short' ? p.entry - st.price : st.price - p.entry) * p.qty : 0;
+    addRow([hhmm(p.t), base(p.sym), p.dir, p.entry.toFixed(p.dec), p.stop.toFixed(p.dec) + ' / ' + p.target.toFixed(p.dec), 'open ' + (live >= 0 ? '+' : MINUS) + '$' + Math.abs(live).toFixed(2)], ['', '', p.dir === 'short' ? 'c-dn' : 'c-up', '', '', live >= 0 ? 'rev' : 'cont']);
+  }
+  for (const t of paper.trades.slice(0, 15)) {
+    addRow([hhmm(t.t), base(t.sym), t.dir, t.entry.toFixed(t.dec), t.how + ' @ ' + t.exit.toFixed(t.dec), (t.pnl >= 0 ? '+' : MINUS) + '$' + Math.abs(t.pnl).toFixed(2) + ' (' + t.R.toFixed(2) + 'R)'], ['', '', t.dir === 'short' ? 'c-dn' : 'c-up', '', '', t.pnl >= 0 ? 'rev' : 'cont']);
+  }
+  if (!paper.open.length && !n) addRow(['No signals yet. A trade opens when a 15-minute candle sweeps a nearest pool and closes back inside' + (settings.needLiqs ? ', with real liquidations on that side' : '') + '.', '', '', '', '', ''], []);
+  tbl.appendChild(tb); wrap.appendChild(tbl); box.appendChild(wrap);
+}
+
+// ---------- 4. order-book walls (open coin only) ----------
+let bookBusy = false;
+async function refreshBook() {
+  if (bookBusy || !openSym || document.hidden) return;
+  const st = S.get(openSym);
+  if (!st || st.status !== 'ready') return;
+  bookBusy = true;
+  try {
+    const r = await api('/v5/market/orderbook?category=linear&symbol=' + st.sym + '&limit=500', 1);
+    const side = (rows) => {
+      const lv = (rows || []).map((x) => ({ px: +x[0], usd: +x[0] * +x[1] }));
+      const sorted = lv.map((x) => x.usd).sort((a, b) => a - b);
+      const med = sorted.length ? sorted[sorted.length >> 1] : 0;
+      return lv.filter((x) => x.usd >= Math.max(8 * med, 20000)).sort((a, b) => b.usd - a.usd).slice(0, 3);
+    };
+    st.walls = { bids: side(r.b), asks: side(r.a), t: Date.now() };
+    st.wallKey = '';
+  } catch (e) { /* next round */ }
+  bookBusy = false;
+}
+function paintWalls(st) {
+  const el = st.el.walls;
+  if (!el) return;
+  const w = st.walls;
+  const key = w ? w.t : 0;
+  if (key === st.wallKey) return;
+  st.wallKey = key;
+  el.textContent = '';
+  if (!w) { el.textContent = 'Loading the order book…'; return; }
+  const near = (px, pool) => pool && Math.abs(px / pool.px - 1) <= 0.003;
+  const r = st.res;
+  const line = (label, list, pool, cls) => {
+    const p = document.createElement('p'); p.className = 'wall-line';
+    const b = document.createElement('b'); b.className = cls; b.textContent = label; p.appendChild(b);
+    if (!list.length) p.append(' none within the top 500 levels');
+    for (const x of list) {
+      const s = document.createElement('span'); s.className = 'wall' + (near(x.px, pool) ? ' at-pool' : '');
+      s.textContent = fp(st, x.px) + ' ' + fusd(x.usd) + ' (' + fpct((x.px / st.price - 1) * 100) + ')' + (near(x.px, pool) ? ' at pool' : '');
+      p.appendChild(s);
+    }
+    el.appendChild(p);
+  };
+  line('Ask walls', w.asks, r && r.up.nearest, 'c-up');
+  line('Bid walls', w.bids, r && r.down.nearest, 'c-dn');
+}
+
+// ---------- 5. heatmap (open coin) ----------
+async function buildHeatmap(st) {
+  st.heat = null; st.heatBusy = true; drawHeatmap(st);
+  try {
+    st.heat = await runJob({ kind: 'heatmap', candles: st.candles.slice(-1000), venues: venuesOf(st), params: modelParams(st), look: Math.min(672, LOOKBACK[settings.lookback]), cols: 72, price: st.price });
+    st.heat.price = st.price; st.heat.at = Date.now();
+  } catch (e) { st.heat = { err: e.message }; }
+  st.heatBusy = false;
+  drawHeatmap(st);
+}
+function heatColor(t) {
+  // dark indigo -> violet -> teal -> yellow
+  const stops = [[17, 20, 31], [72, 40, 120], [33, 145, 140], [253, 231, 37]];
+  const x = Math.min(0.999, Math.max(0, t)) * (stops.length - 1), i = Math.floor(x), f = x - i;
+  const a = stops[i], b = stops[i + 1];
+  return 'rgb(' + Math.round(a[0] + (b[0] - a[0]) * f) + ',' + Math.round(a[1] + (b[1] - a[1]) * f) + ',' + Math.round(a[2] + (b[2] - a[2]) * f) + ')';
+}
+function drawHeatmap(st) {
+  const cv = st.el.heat;
+  if (!cv) return;
+  const ctx = setupCanvas(cv);
+  if (!ctx) return;
+  const w = cv._w, h = cv._h, m = { l: 8, r: 54, t: 8, b: 20 };
+  ctx.clearRect(0, 0, w, h);
+  ctx.font = '10px ' + C.mono;
+  const hm = st.heat;
+  if (!hm || st.heatBusy || hm.err) {
+    ctx.fillStyle = C.muted; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(hm && hm.err ? 'Heatmap unavailable: ' + hm.err : 'Building the 3-day heatmap…', w / 2, h / 2);
+    return;
+  }
+  const cols = hm.cols.filter(Boolean);
+  if (!cols.length) return;
+  const nb = cols[0].v.length, span = LIQ_DEFAULTS.searchPct, P = hm.price;
+  const pw = w - m.l - m.r, ph = h - m.t - m.b;
+  let M = 0;
+  for (const c of cols) for (let k = 0; k < nb; k++) if (c.v[k] > M) M = c.v[k];
+  const cw = pw / cols.length, rh = ph / nb;
+  cols.forEach((c, i) => {
+    for (let k = 0; k < nb; k++) {
+      const v = c.v[k];
+      if (!(v > 0)) continue;
+      ctx.fillStyle = heatColor(Math.sqrt(v / M));
+      ctx.fillRect(m.l + i * cw, m.t + (nb - 1 - k) * rh, Math.ceil(cw), Math.ceil(rh) + 0.5);
+    }
+  });
+  const Y = (px) => m.t + ph * (0.5 - (px / P - 1) / (2 * span));
+  ctx.beginPath();
+  cols.forEach((c, i) => { const x = m.l + (i + 0.5) * cw, y = Y(c.close); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.strokeStyle = C.fg; ctx.lineWidth = 1.25; ctx.stroke();
+  ctx.fillStyle = C.muted; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  for (const pct of [-15, -10, -5, 0, 5, 10, 15]) {
+    const y = Y(P * (1 + pct / 100));
+    ctx.fillText(fp(st, P * (1 + pct / 100)), w - m.r + 4, Math.min(Math.max(y, m.t + 5), h - m.b - 5));
+  }
+  ctx.textBaseline = 'top';
+  ctx.fillText(hhmm(cols[0].t), m.l, h - m.b + 5);
+  ctx.textAlign = 'right';
+  ctx.fillText('now', m.l + pw, h - m.b + 5);
+}
+
+// ---------- 6. short-term vs long-term pools (open coin) ----------
+async function buildHorizons(st) {
+  st.hz = { busy: true };
+  paintHorizons(st);
+  const out = {};
+  try {
+    const venues = [st.oi];
+    if (settings.binance && st.binStatus === 'ok' && st.bin && st.bin.size) venues.push(st.bin);
+    const short = liqMap(st.candles.slice(-96), venues, Object.assign({}, LIQ_DEFAULTS, { tiers: [[25, 0.3], [50, 0.4], [100, 0.3]], sigFrac: settings.sig, mmr: st.mmr, maxLev: st.maxLev, price: st.price }));
+    out.short = short;
+    if (!st.h1 || Date.now() - st.h1.at > 30 * 60000) {
+      const kl = await api('/v5/market/kline?category=linear&symbol=' + st.sym + '&interval=60&limit=720');
+      const candles = (kl.list || []).map(rowToCandle).reverse();
+      const oi = new Map();
+      let cursor = '';
+      for (let p = 0; p < 5; p++) {
+        const r = await api('/v5/market/open-interest?category=linear&symbol=' + st.sym + '&intervalTime=1h&limit=200' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''));
+        const list = r.list || [];
+        for (const x of list) oi.set(+x.timestamp, +x.openInterest);
+        cursor = r.nextPageCursor;
+        if (!cursor || !list.length || Math.min.apply(null, list.map((x) => +x.timestamp)) <= candles[0].t) break;
+      }
+      st.h1 = { candles: candles, oi: oi, at: Date.now() };
+    }
+    out.long = liqMap(st.h1.candles, st.h1.oi, Object.assign({}, LIQ_DEFAULTS, { stepMs: 3600000, tiers: [[3, 0.2], [5, 0.3], [10, 0.3], [20, 0.2]], sigFrac: settings.sig, mmr: st.mmr, maxLev: st.maxLev, price: st.price }));
+  } catch (e) { out.err = e.message; }
+  st.hz = out;
+  paintHorizons(st);
+}
+function paintHorizons(st) {
+  const el = st.el.hz;
+  if (!el) return;
+  el.textContent = '';
+  const hz = st.hz;
+  if (!hz || hz.busy) { el.textContent = 'Working out short- and long-term pools…'; return; }
+  const tbl = document.createElement('table'); tbl.className = 'rec';
+  tbl.innerHTML = '<thead><tr><th>Horizon</th><th>▲ above</th><th>▼ below</th></tr></thead>';
+  const tb = document.createElement('tbody');
+  const cell = (c) => c ? fp(st, c.px) + ' ' + fpct((c.px / st.price - 1) * 100) + ' · ' + fusd(c.size) : 'none ≤15%';
+  const rows = [
+    ['Short-term · 1 day, 25–100x', hz.short],
+    ['Standard · ' + settings.lookback + ' days, mixed', st.res],
+    ['Long-term · 30 days, 3–20x (Bybit)', hz.long]
+  ];
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    const a = document.createElement('td'); a.textContent = r[0];
+    const b = document.createElement('td'); b.className = 'c-up'; b.textContent = r[1] ? cell(r[1].up.nearest) : '—';
+    const c = document.createElement('td'); c.className = 'c-dn'; c.textContent = r[1] ? cell(r[1].down.nearest) : '—';
+    tr.append(a, b, c); tb.appendChild(tr);
+  }
+  tbl.appendChild(tb);
+  const wrap = document.createElement('div'); wrap.className = 'tablewrap'; wrap.appendChild(tbl);
+  el.appendChild(wrap);
+  if (hz.err) { const p = document.createElement('p'); p.className = 'note'; p.textContent = 'Long-term map unavailable: ' + hz.err; el.appendChild(p); }
+}
+
+// ---------- 7. buying / selling pressure ----------
+function addTrade(st, buy, usd, t) {
+  if (!st.flow) st.flow = new Map();
+  const m = Math.floor(t / 60000) * 60000;
+  let b = st.flow.get(m);
+  if (!b) { b = { buy: 0, sell: 0 }; st.flow.set(m, b); if (st.flow.size > 100) { const cut = m - 95 * 60000; for (const k of st.flow.keys()) if (k < cut) st.flow.delete(k); } }
+  if (buy) b.buy += usd; else b.sell += usd;
+}
+function flowSum(st, mins) {
+  let buy = 0, sell = 0;
+  if (!st.flow) return { buy: 0, sell: 0, delta: 0, ratio: 0 };
+  const cut = Date.now() - mins * 60000;
+  for (const [k, b] of st.flow) if (k >= cut - 60000) { buy += b.buy; sell += b.sell; }
+  const tot = buy + sell;
+  return { buy: buy, sell: sell, delta: buy - sell, ratio: tot ? (buy - sell) / tot : 0 };
+}
+function pressureTag(st) {
+  const f = flowSum(st, 5), r = st.res;
+  if (!r || !(st.price > 0)) return '';
+  if (f.buy + f.sell < Math.max(50000, st.oiVal * 0.0005)) return '';
+  if (f.ratio >= 0.2 && r.up.nearest && (r.up.nearest.px / st.price - 1) <= 0.02) return 'up';
+  if (f.ratio <= -0.2 && r.down.nearest && (1 - r.down.nearest.px / st.price) <= 0.02) return 'dn';
+  return '';
+}
+function paintPressure(st) {
+  const el = st.el.flow;
+  if (!el) return;
+  el.textContent = '';
+  for (const mins of [5, 15, 60]) {
+    const f = flowSum(st, mins);
+    const s = document.createElement('span');
+    s.append(mins + 'm ');
+    const b = document.createElement('b'); b.className = f.delta >= 0 ? 'c-up' : 'c-dn';
+    b.textContent = (f.delta >= 0 ? '+$' : MINUS + '$') + fusd(Math.abs(f.delta)).slice(1) + ' · ' + (f.ratio >= 0 ? '+' : MINUS) + Math.abs(Math.round(f.ratio * 100)) + '%';
+    s.appendChild(b); el.appendChild(s);
+  }
+  const note = document.createElement('span');
+  note.className = 'note';
+  note.textContent = 'aggressive buys minus sells on Bybit, since this page opened';
+  el.appendChild(note);
+}
+
+// ---------- keep awake (for a Mac left logging) ----------
+let wakeLock = null;
+async function applyWake() {
+  try {
+    if (settings.awake && !document.hidden && navigator.wakeLock && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } else if (!settings.awake && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch (e) { wakeLock = null; }
 }
 
 boot();
