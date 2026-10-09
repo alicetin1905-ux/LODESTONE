@@ -159,6 +159,9 @@ textarea{width:100%;resize:vertical;font:13px/1.4 var(--mono)}
 .wall{background:var(--raise);border-radius:999px;padding:3px 8px;color:var(--fg);font-variant-numeric:tabular-nums}
 .wall.at-pool{background:var(--warn-soft);color:var(--warn)}
 .flow .note{flex-basis:100%}
+.steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted);max-width:70ch}
+.steps b{color:var(--fg)}
+a.btn{color:var(--fg);text-decoration:none;display:inline-block}
 
 .sect{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
 .sect summary{cursor:pointer;font-weight:600}
@@ -264,6 +267,19 @@ textarea{width:100%;resize:vertical;font:13px/1.4 var(--mono)}
     <div class="rec-stats" id="recStats"></div>
     <div class="tablewrap"><table class="rec"><thead><tr><th>Time</th><th>Coin</th><th>Pool</th><th>Real liqs</th><th>15m</th><th>60m</th></tr></thead><tbody id="recRows"></tbody></table></div>
     <div class="actions"><button class="btn" type="button" id="recClear">Clear log</button></div>
+  </details>
+
+  <details class="sect" id="widgetBox">
+    <summary>iPhone widget</summary>
+    <p class="note">Shows the 3 coins whose nearest pool is closest to price, on your home screen or lock screen. It uses the same model as this page. iOS decides how often widgets refresh, usually every 15 to 30 minutes.</p>
+    <ol class="steps">
+      <li>Install <b>Scriptable</b> from the App Store. It's free.</li>
+      <li>Tap <b>Copy widget script</b> below.</li>
+      <li>In Scriptable, tap <b>+</b>, paste, and name the script <b>LODESTONE</b>.</li>
+      <li>Tap ▶ once. The first run loads 10 days of history and takes about 20 seconds.</li>
+      <li>On your home screen, add a <b>Scriptable</b> widget, long-press it, choose <b>Edit Widget</b>, and pick <b>LODESTONE</b> as the script.</li>
+    </ol>
+    <div class="actions"><button class="btn primary" type="button" id="wCopy">Copy widget script</button><a class="btn" href="lodestone-widget.js" target="_blank" rel="noopener">Open the script</a><span class="note" id="wNote"></span></div>
   </details>
 
   <details class="how">
@@ -1754,6 +1770,16 @@ function bindUI() {
   $('#soundBtn').addEventListener('click', unlockAudio);
   $('#recClear').addEventListener('click', () => { record = []; saveRecord(); paintRecord(); });
   $('#btRun').addEventListener('click', () => { runBacktest(); });
+  let widgetCode = null;
+  const loadWidget = () => { if (widgetCode === null) { widgetCode = ''; fetch('lodestone-widget.js', { cache: 'no-store' }).then((r) => r.text()).then((t) => { widgetCode = t; }).catch(() => { widgetCode = null; }); } };
+  $('#widgetBox').addEventListener('toggle', loadWidget);
+  $('#wCopy').addEventListener('click', () => {
+    const note = $('#wNote');
+    if (!widgetCode) { loadWidget(); note.textContent = 'Still loading the script. Tap again in a second.'; return; }
+    const done = () => { note.textContent = 'Copied. Paste it into a new script in Scriptable.'; };
+    const fail = () => { note.textContent = 'Copying was blocked. Tap Open the script, then select all and copy.'; };
+    try { navigator.clipboard.writeText(widgetCode).then(done, fail); } catch (e) { fail(); }
+  });
   $('#paperReset').addEventListener('click', () => { paper = { start: 1000, equity: 1000, open: [], trades: [] }; savePaper(); paintPaper(true); });
   window.addEventListener('resize', () => { for (const st of S.values()) st.paint = true; });
   document.addEventListener('visibilitychange', onVisibility);
