@@ -1,0 +1,27 @@
+<!doctype html><meta charset="utf-8"><title>widget test</title><pre id="o">running…</pre>
+<script>
+(async () => {
+  const o = document.getElementById('o');
+  try {
+    const src = await fetch('lodestone-widget.js', { cache: 'no-store' }).then(r => r.text());
+    const files = {}; const logs = []; let out = null;
+    class Rec { constructor() { this.items = []; } addText(s) { const t = { text: s, centerAlignText() {} }; this.items.push(t); return t; } addStack() { const s = new Rec(); s.layoutHorizontally = () => {}; s.centerAlignContent = () => {}; this.items.push(s); return s; } addSpacer() {} setPadding() {} async presentMedium() { out = this; } }
+    const flat = (r) => r.items.map((x) => (x.items ? flat(x) : x.text)).join(' ');
+    const env = {
+      Request: class { constructor(u) { this.u = u; } async loadJSON() { const r = await fetch(this.u, { cache: 'no-store' }); return r.json(); } },
+      FileManager: { local: () => ({ documentsDirectory: () => '/d', joinPath: (a, b) => a + '/' + b, fileExists: (p) => p in files, readString: (p) => files[p], writeString: (p, s) => { files[p] = s; } }) },
+      ListWidget: Rec, Color: class { constructor(h) { this.h = h; } }, Font: new Proxy({}, { get: () => () => ({}) }),
+      config: { runsInWidget: false, widgetFamily: null }, args: { widgetParameter: null },
+      Script: { setWidget(w) { out = w; }, complete() {} }, console: { log: (s) => logs.push(s) }
+    };
+    const AF = Object.getPrototypeOf(async function () {}).constructor;
+    const t0 = Date.now();
+    await new AF(...Object.keys(env), src)(...Object.values(env));
+    const t1 = Date.now();
+    env.config.runsInWidget = true; env.config.widgetFamily = 'small';
+    await new AF(...Object.keys(env), src)(...Object.values(env));
+    const t2 = Date.now();
+    o.textContent = 'DONE first run ' + ((t1 - t0) / 1000).toFixed(1) + 's, refresh ' + ((t2 - t1) / 1000).toFixed(1) + 's, cache ' + Math.round(files['/d/lodestone-widget-cache.json'].length / 1024) + ' KB\n' + logs.join('\n') + '\nSMALL: ' + flat(out);
+  } catch (e) { o.textContent = 'ERROR ' + e + '\n' + (e.stack || ''); }
+})();
+</script>
