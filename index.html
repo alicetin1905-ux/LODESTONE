@@ -469,7 +469,7 @@ const WS_URL = 'wss://stream.bybit.com/v5/public/linear';
 const BIN_WS = 'wss://fstream.binance.com/ws/!forceOrder@arr';
 const STEP = 900000;            // 15 minutes
 const MAX_KEEP = 1100;          // candles kept in memory per coin
-const DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'DOGE', 'SUI', 'ENA', 'WLD', 'DYDX', 'GALA', 'EGLD', 'NEAR', 'XLM', 'BLUR', 'SAND', 'AXS', 'ZIL', 'CHZ', 'GRAM', '1000PEPE', 'KAITO', 'XRP', 'ATOM', '1000BONK'];
+const DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'DOGE', 'SUI', 'ENA', 'WLD', 'DYDX', 'GALA', 'EGLD', 'NEAR', 'XLM', 'BLUR', 'SAND', 'AXS', 'ZIL', 'CHZ', 'GRAM', '1000PEPE', 'KAITO', 'XRP', 'ATOM', '1000BONK', 'QNT'];
 const MIXES = {
   retail: { label: 'Retail mix 5–100x', tiers: [[5, 0.10], [10, 0.25], [20, 0.20], [25, 0.20], [50, 0.15], [100, 0.10]] },
   even: { label: 'Even split 10/25/50/100x', tiers: [[10, 0.25], [25, 0.25], [50, 0.25], [100, 0.25]] }
@@ -533,6 +533,13 @@ const settings = {
   awake: store.get('awake', false) === true
 };
 if (!settings.coins.length) settings.coins = DEFAULT_COINS.slice();
+// coins added to the default list after release also join a saved list, once
+for (const add of ['QNT']) {
+  if (!store.get('added.' + add, false)) {
+    if (settings.coins.indexOf(add) < 0) { settings.coins.push(add); store.set('coins', settings.coins); }
+    store.set('added.' + add, true);
+  }
+}
 if (!MIXES[settings.mix]) settings.mix = 'retail';
 if (!LOOKBACK[settings.lookback]) settings.lookback = '10';
 if (SIGS.indexOf(settings.sig) < 0) settings.sig = 0.3;

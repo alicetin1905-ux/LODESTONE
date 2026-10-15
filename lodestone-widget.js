@@ -160,7 +160,7 @@ const LIQ_DEFAULTS = {
 // coin list such as "BTC, ETH, SOL". Leave it empty for the full LODESTONE list.
 // ---------------------------------------------------------------------------
 const PAGE = 'https://alicetin1905-ux.github.io/LODESTONE/';
-const DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'DOGE', 'SUI', 'ENA', 'WLD', 'DYDX', 'GALA', 'EGLD', 'NEAR', 'XLM', 'BLUR', 'SAND', 'AXS', 'ZIL', 'CHZ', 'GRAM', '1000PEPE', 'KAITO', 'XRP', 'ATOM', '1000BONK'];
+const DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'DOGE', 'SUI', 'ENA', 'WLD', 'DYDX', 'GALA', 'EGLD', 'NEAR', 'XLM', 'BLUR', 'SAND', 'AXS', 'ZIL', 'CHZ', 'GRAM', '1000PEPE', 'KAITO', 'XRP', 'ATOM', '1000BONK', 'QNT'];
 const RETAIL = [[5, 0.10], [10, 0.25], [20, 0.20], [25, 0.20], [50, 0.15], [100, 0.10]];
 const STEP = 900000, KEEP = 1000, DAY = 86400000;
 const COL = { bg: '#0b0d14', fg: '#e4e7f0', muted: '#8b91a8', faint: '#4f566f', up: '#2fd4a3', dn: '#ff5577', warn: '#f2b84b' };
@@ -321,7 +321,7 @@ function ranked(results) {
 }
 
 // ---------- widget ----------
-function fpct(x) { const a = Math.abs(x).toFixed(2); return (+a === 0 ? '' : x > 0 ? '+' : MINUS) + a + '%'; }
+function fpct(x) { const a = Math.abs(x).toFixed(1); return (+a === 0 ? '' : x > 0 ? '+' : MINUS) + a + '%'; }
 function fusd(x) {
   if (!(x > 0)) return '$0';
   if (x >= 1e9) return '$' + (x / 1e9).toFixed(1) + 'B';
