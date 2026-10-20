@@ -230,9 +230,7 @@ a.btn{color:var(--fg);text-decoration:none;display:inline-block}
     <div class="field"><label>Alerts</label><label class="check"><input type="checkbox" id="alertIn"> Alert on near pools and sweeps</label></div>
     <div class="field"><label for="alertPctIn">Alert when price is within</label><select id="alertPctIn"><option value="0.3">0.3% of a pool</option><option value="0.5">0.5% of a pool</option><option value="1">1% of a pool</option></select></div>
     <div class="field"><label>Sound</label><label class="check"><input type="checkbox" id="soundIn"> Play a sound</label></div>
-    <h2>Signals and device</h2>
-    <div class="field"><label>Sweep signals</label><label class="check"><input type="checkbox" id="sigOnIn"> Signal and paper-trade sweep reversals</label></div>
-    <div class="field"><label>Signal filter</label><label class="check"><input type="checkbox" id="needLiqIn"> Only when real liquidations hit</label></div>
+    <h2>Device</h2>
     <div class="field"><label>Screen</label><label class="check"><input type="checkbox" id="awakeIn"> Keep screen awake</label><small>Turn on for a Mac or phone left logging.</small></div>
     <div class="actions"><button class="btn primary" type="submit">Apply</button><button class="btn" type="button" id="testBtn">Send test alert</button><button class="btn" type="button" id="resetBtn">Restore defaults</button><span class="note" id="testNote"></span></div>
   </form>
@@ -248,11 +246,11 @@ a.btn{color:var(--fg);text-decoration:none;display:inline-block}
 
   <ul class="ladder" id="ladder" aria-label="Coins"></ul>
 
-  <details class="sect" id="paperBox" open>
-    <summary>Signals and paper account</summary>
-    <p class="note">A signal fires when a 15-minute candle sweeps a nearest pool and closes back inside it. The paper account fades it: entry at the close, stop just beyond the wick, target 2× the risk, closed after 6 hours. It risks 1% of a $1,000 account per trade with Bybit taker fees. Saved in this browser; trades only while this page is open.</p>
-    <div id="paperBody"></div>
-    <div class="actions"><button class="btn" type="button" id="paperReset">Reset paper account</button></div>
+  <details class="sect" id="recBox" open>
+    <summary>Liquidation recorder</summary>
+    <p class="note">Saves every real liquidation from the live Bybit feed for your coins, in this browser only. After 1 to 2 weeks this is the yardstick for tuning the pool model: where liquidations actually happened, and how big they were.</p>
+    <div id="recBody"></div>
+    <div class="actions"><button class="btn primary" type="button" id="recExport">Export file</button><button class="btn" type="button" id="recClear2">Delete recording</button><span class="note" id="recNote"></span></div>
   </details>
 
   <details class="sect" id="btBox" open>
@@ -528,8 +526,6 @@ const settings = {
   alerts: store.get('alerts', true) !== false,
   alertPct: Number(store.get('alertPct', 0.5)),
   sound: store.get('sound', true) !== false,
-  signals: store.get('signals', true) !== false,
-  needLiqs: store.get('needLiqs', true) !== false,
   awake: store.get('awake', false) === true
 };
 if (!settings.coins.length) settings.coins = DEFAULT_COINS.slice();
@@ -758,7 +754,6 @@ function applyTicker(st, d) {
       if (p < last.l) { last.l = p; st.dirty = true; }
       last.c = p;
     }
-    if (st.status === 'ready') checkPaper(st);
   }
   if (d.price24hPcnt != null && d.price24hPcnt !== '') st.chg24 = +d.price24hPcnt;
   if (d.openInterestValue != null && d.openInterestValue !== '') st.oiVal = +d.openInterestValue;
@@ -769,6 +764,7 @@ function applyTicker(st, d) {
 // ---------- real liquidations ----------
 function addLiq(st, side, usd, px, t, ex) {
   if (!(usd > 0)) return;
+  recAdd(st.sym, side, usd, px, t, ex);
   st.liqs.push({ side: side, usd: usd, px: px, t: t, ex: ex });
   const cut = Date.now() - LIQ_KEEP;
   while (st.liqs.length && st.liqs[0].t < cut) st.liqs.shift();
@@ -802,7 +798,6 @@ function compute(st) {
   st.prevUp = r.up.nearest; st.prevDn = r.down.nearest;
   st.hiSince = -Infinity; st.loSince = Infinity;
   st.res = r; st.calcAt = now; st.dirty = false; st.paint = true;
-  snapPools(st);
   checkNear(st);
 }
 
@@ -1534,7 +1529,6 @@ function onWS(ev) {
     for (const k of m.data) {
       const c = { t: +k.start, o: +k.open, h: +k.high, l: +k.low, c: +k.close, v: +k.volume, q: +k.turnover };
       upsertCandle(st, c);
-      if (k.confirm) onCandleClosed(st, c);
     }
   } else if (tp.indexOf('publicTrade.') === 0) {
     const st = S.get(tp.slice(12));
@@ -1658,7 +1652,6 @@ function tick() {
   }
   if (now - lastSummary > 1000) { paintSummary(); setLive(); }
   if (settings.sort !== 'list') applySort(false);
-  if (paper.open.length) paintPaper();
   if (!btAuto && S.size && Array.from(S.values()).every((s) => s.status !== 'loading') && Array.from(S.values()).some((s) => s.status === 'ready')) {
     btAuto = true;
     setTimeout(runBacktest, 3000);
@@ -1687,8 +1680,6 @@ function fillForm() {
   $('#alertIn').checked = settings.alerts;
   $('#alertPctIn').value = String(settings.alertPct);
   $('#soundIn').checked = settings.sound;
-  $('#sigOnIn').checked = settings.signals;
-  $('#needLiqIn').checked = settings.needLiqs;
   $('#awakeIn').checked = settings.awake;
   $('#testNote').textContent = '';
 }
@@ -1727,10 +1718,8 @@ function applySettings() {
   const ap = Number($('#alertPctIn').value);
   settings.alertPct = ALERT_PCTS.indexOf(ap) >= 0 ? ap : 0.5;
   settings.sound = $('#soundIn').checked;
-  settings.signals = $('#sigOnIn').checked;
-  settings.needLiqs = $('#needLiqIn').checked;
   settings.awake = $('#awakeIn').checked;
-  for (const k of ['mix', 'lookback', 'sig', 'binance', 'alerts', 'alertPct', 'sound', 'signals', 'needLiqs', 'awake']) store.set(k, settings[k]);
+  for (const k of ['mix', 'lookback', 'sig', 'binance', 'alerts', 'alertPct', 'sound', 'awake']) store.set(k, settings[k]);
   applyWake();
   if (settings.alerts && settings.sound) unlockAudio();      // the Apply tap counts as the gesture iOS needs
   if (coins.length && coins.join() !== settings.coins.join()) { settings.coins = coins; store.set('coins', coins); applyCoins(); }
@@ -1742,7 +1731,6 @@ function applySettings() {
   }
   paintModel();
   paintSoundBtn();
-  paintPaper(true);
 }
 
 function bindUI() {
@@ -1766,7 +1754,7 @@ function bindUI() {
     $('#coinsIn').value = DEFAULT_COINS.join(', ');
     $('#mixIn').value = 'retail'; $('#lbIn').value = '10'; $('#sigIn').value = '0.3';
     $('#binIn').checked = true; $('#alertIn').checked = true; $('#alertPctIn').value = '0.5'; $('#soundIn').checked = true;
-    $('#sigOnIn').checked = true; $('#needLiqIn').checked = true; $('#awakeIn').checked = false;
+    $('#awakeIn').checked = false;
   });
   $('#testBtn').addEventListener('click', () => {
     unlockAudio();
@@ -1777,6 +1765,8 @@ function bindUI() {
   $('#soundBtn').addEventListener('click', unlockAudio);
   $('#recClear').addEventListener('click', () => { record = []; saveRecord(); paintRecord(); });
   $('#btRun').addEventListener('click', () => { runBacktest(); });
+  $('#recExport').addEventListener('click', recExport);
+  $('#recClear2').addEventListener('click', recClear);
   let widgetCode = null;
   const loadWidget = () => { if (widgetCode === null) { widgetCode = ''; fetch('lodestone-widget.js', { cache: 'no-store' }).then((r) => r.text()).then((t) => { widgetCode = t; }).catch(() => { widgetCode = null; }); } };
   $('#widgetBox').addEventListener('toggle', loadWidget);
@@ -1787,7 +1777,6 @@ function bindUI() {
     const fail = () => { note.textContent = 'Copying was blocked. Tap Open the script, then select all and copy.'; };
     try { navigator.clipboard.writeText(widgetCode).then(done, fail); } catch (e) { fail(); }
   });
-  $('#paperReset').addEventListener('click', () => { paper = { start: 1000, equity: 1000, open: [], trades: [] }; savePaper(); paintPaper(true); });
   window.addEventListener('resize', () => { for (const st of S.values()) st.paint = true; });
   document.addEventListener('visibilitychange', onVisibility);
 }
@@ -1823,7 +1812,10 @@ function boot() {
   setInterval(() => { $('#clock').textContent = hhmmss(Date.now()); }, 1000);
   setInterval(() => { paintFeed(); paintLiqFeed(); }, 30000);
   setInterval(refreshBook, 4000);
-  paintPaper(true);
+  recOpen().then(recCounts);
+  setInterval(recFlush, 5000);
+  setInterval(paintRecorder, 15000);
+  window.addEventListener('pagehide', recFlush);
   paintBacktest();
   applyWake();
 }
@@ -1831,7 +1823,7 @@ function boot() {
 
 // =====================================================================
 // v3 additions: background worker (backtest + heatmap), horizons, order-book walls,
-// buying/selling pressure, sweep-reversal signals with a paper account, keep-awake.
+// buying/selling pressure, keep-awake, liquidation recorder.
 // =====================================================================
 
 // ---------- background worker: same model source as the page ----------
@@ -1841,8 +1833,8 @@ function workerMain() {
   function backtest(job) {
     const c = job.candles, venues = toMaps(job.venues), N = c.length;
     const look = job.look, step = 4, testFrom = Math.max(look >> 1, N - job.testCandles);
-    const sweeps = [], trades = [];
-    let lastUp = 0, lastDn = 0, busyUntil = -1;
+    const sweeps = [];
+    let lastUp = 0, lastDn = 0;
     for (let i = testFrom; i < N - 2; i += step) {
       const win = c.slice(Math.max(0, i - look + 1), i + 1);
       const p = Object.assign({}, LIQ_DEFAULTS, job.params, { price: c[i].c });
@@ -1859,33 +1851,10 @@ function workerMain() {
         const r15 = (c[j].c / pool.px - 1) * 100;
         const r60 = j + 4 < N ? (c[j + 4].c / pool.px - 1) * 100 : null;
         sweeps.push({ t: c[j].t, side: side, px: pool.px, size: pool.size, rejected: rejected, r15: r15, r60: r60 });
-        // the signal rule: sweep, then close back inside -> fade it, stop beyond the wick, target 2R
-        if (rejected && j > busyUntil && j + 1 < N) {
-          const tr = simTrade(c, j, side === 'up' ? 'short' : 'long', job.fee);
-          if (tr) { trades.push(tr); busyUntil = tr.exitIdx; }
-        }
         break;
       }
     }
-    return { sweeps: sweeps, trades: trades };
-  }
-  function simTrade(c, j, dir, fee) {
-    const entry = c[j].c;
-    const stop = dir === 'short' ? c[j].h * 1.001 : c[j].l * 0.999;
-    const risk = Math.abs(stop - entry);
-    if (!(risk > 0) || risk / entry > 0.05) return null;
-    const target = dir === 'short' ? entry - 2 * risk : entry + 2 * risk;
-    const feeR = (2 * fee * entry) / risk;
-    for (let k = j + 1; k < c.length && k <= j + 24; k++) {
-      const hitStop = dir === 'short' ? c[k].h >= stop : c[k].l <= stop;
-      const hitTgt = dir === 'short' ? c[k].l <= target : c[k].h >= target;
-      if (hitStop) return { t: c[j].t, dir: dir, entry: entry, R: -1 - feeR, exitIdx: k, how: 'stop' };
-      if (hitTgt) return { t: c[j].t, dir: dir, entry: entry, R: 2 - feeR, exitIdx: k, how: 'target' };
-    }
-    const k = Math.min(c.length - 1, j + 24);
-    if (k <= j) return null;
-    const R = (dir === 'short' ? entry - c[k].c : c[k].c - entry) / risk - feeR;
-    return { t: c[j].t, dir: dir, entry: entry, R: R, exitIdx: k, how: k === j + 24 ? 'time' : 'open' };
+    return { sweeps: sweeps };
   }
   function heatmap(job) {
     const c = job.candles, venues = toMaps(job.venues), N = c.length, cols = [];
@@ -1939,7 +1908,6 @@ function venuesOf(st) {
 function modelParams(st) { return { tiers: MIXES[settings.mix].tiers, sigFrac: settings.sig, mmr: st.mmr, maxLev: st.maxLev }; }
 
 // ---------- 1. backtest ----------
-const FEE = 0.00055;
 let btAuto = false;
 let bt = { running: false, done: 0, total: 0, results: new Map(), at: 0 };
 async function runBacktest() {
@@ -1951,22 +1919,21 @@ async function runBacktest() {
   for (const s of syms) {
     const st = S.get(s);
     try {
-      const out = await runJob({ kind: 'backtest', candles: st.candles.slice(-1000), venues: venuesOf(st), params: modelParams(st), look: Math.min(672, LOOKBACK[settings.lookback]), testCandles: 672, fee: FEE });
+      const out = await runJob({ kind: 'backtest', candles: st.candles.slice(-1000), venues: venuesOf(st), params: modelParams(st), look: Math.min(672, LOOKBACK[settings.lookback]), testCandles: 672 });
       bt.results.set(s, out);
-    } catch (e) { bt.results.set(s, { sweeps: [], trades: [], err: e.message }); }
+    } catch (e) { bt.results.set(s, { sweeps: [], err: e.message }); }
     bt.done++;
     paintBacktest();
   }
   bt.running = false; bt.at = Date.now();
   paintBacktest();
 }
-function statsOf(sweeps, trades) {
+function statsOf(sweeps) {
   const rej = sweeps.filter((x) => x.rejected).length;
   const d60 = sweeps.filter((x) => x.r60 != null);
   const rev60 = d60.filter((x) => (x.side === 'up' ? x.r60 < 0 : x.r60 > 0)).length;
-  const sumR = trades.reduce((a, t) => a + t.R, 0);
-  const wins = trades.filter((t) => t.R > 0).length;
-  return { n: sweeps.length, rej: rej, rev60: rev60, n60: d60.length, trades: trades.length, wins: wins, sumR: sumR };
+  const move = d60.reduce((acc, x) => acc + (x.side === 'up' ? -x.r60 : x.r60), 0);
+  return { n: sweeps.length, rej: rej, rev60: rev60, n60: d60.length, move: d60.length ? move / d60.length : null };
 }
 function paintBacktest() {
   const box = $('#btBody');
@@ -1974,135 +1941,33 @@ function paintBacktest() {
   box.textContent = '';
   const note = document.createElement('p'); note.className = 'note';
   if (bt.running) note.textContent = 'Replaying the last 7 days… ' + bt.done + '/' + bt.total + ' coins';
-  else if (!bt.at) note.textContent = 'Replays the model hour by hour over the last 7 days of 15-minute candles, logs every sweep of a nearest pool, and tests the signal rule on each one. Runs on this device; takes a few seconds per coin.';
-  else note.textContent = 'Last 7 days, replayed at ' + hhmm(bt.at) + '. Sweep = price traded through a nearest pool. Rejected = that candle closed back inside. Signal = fade a rejected sweep, stop just beyond the wick, target 2R, closed after 6 h, fees included.';
+  else if (!bt.at) note.textContent = 'Replays the model hour by hour over the last 7 days of 15-minute candles and logs every time price took out a nearest pool. Runs on this device; takes a few seconds per coin.';
+  else note.textContent = 'Last 7 days, replayed at ' + hhmm(bt.at) + '. Sweep = price traded through a nearest pool. Closed inside = that candle closed back inside the pool. Reversed = price was back on the other side of the pool an hour later.';
   box.appendChild(note);
   if (!bt.results.size) return;
-  let allS = [], allT = [];
-  for (const v of bt.results.values()) { allS = allS.concat(v.sweeps); allT = allT.concat(v.trades); }
-  const a = statsOf(allS, allT);
+  let allS = [];
+  for (const v of bt.results.values()) allS = allS.concat(v.sweeps);
+  const a = statsOf(allS);
   const cells = [
     ['Sweeps', String(a.n)],
     ['Closed back inside', a.n ? Math.round(100 * a.rej / a.n) + '%' : '—'],
     ['Reversed after 60m', a.n60 ? Math.round(100 * a.rev60 / a.n60) + '%' : '—'],
-    ['Signal trades', String(a.trades)],
-    ['Win rate', a.trades ? Math.round(100 * a.wins / a.trades) + '%' : '—'],
-    ['Total / avg R', a.trades ? a.sumR.toFixed(1) + 'R / ' + (a.sumR / a.trades).toFixed(2) + 'R' : '—']
+    ['Avg move back, 60m', a.move == null ? '—' : fpct(a.move, 2)]
   ];
   const grid = document.createElement('div'); grid.className = 'rec-stats';
   for (const c of cells) { const d = document.createElement('div'); d.innerHTML = '<span class="k"></span><span class="v"></span>'; d.children[0].textContent = c[0]; d.children[1].textContent = c[1]; grid.appendChild(d); }
   box.appendChild(grid);
   const wrap = document.createElement('div'); wrap.className = 'tablewrap';
   const tbl = document.createElement('table'); tbl.className = 'rec';
-  tbl.innerHTML = '<thead><tr><th>Coin</th><th>Sweeps</th><th>Inside</th><th>Rev 60m</th><th>Trades</th><th>Win</th><th>Total R</th></tr></thead>';
+  tbl.innerHTML = '<thead><tr><th>Coin</th><th>Sweeps</th><th>Closed inside</th><th>Reversed 60m</th><th>Avg move back</th></tr></thead>';
   const tb = document.createElement('tbody');
-  const rows = Array.from(bt.results.entries()).map(([s, v]) => [s, statsOf(v.sweeps, v.trades)]).sort((x, y) => y[1].sumR - x[1].sumR);
+  const rows = Array.from(bt.results.entries()).map(([s, v]) => [s, statsOf(v.sweeps)]).sort((x, y) => y[1].n - x[1].n);
   for (const [s, v] of rows) {
     const tr = document.createElement('tr');
-    const vals = [base(s), v.n, v.n ? Math.round(100 * v.rej / v.n) + '%' : '—', v.n60 ? Math.round(100 * v.rev60 / v.n60) + '%' : '—', v.trades, v.trades ? Math.round(100 * v.wins / v.trades) + '%' : '—', v.trades ? v.sumR.toFixed(1) + 'R' : '—'];
-    vals.forEach((x, i) => { const td = document.createElement('td'); td.textContent = x; if (i === 6 && v.trades) td.className = v.sumR >= 0 ? 'rev' : 'cont'; tr.appendChild(td); });
+    const vals = [base(s), v.n, v.n ? Math.round(100 * v.rej / v.n) + '%' : '—', v.n60 ? Math.round(100 * v.rev60 / v.n60) + '%' : '—', v.move == null ? '—' : fpct(v.move, 2)];
+    vals.forEach((x, i) => { const td = document.createElement('td'); td.textContent = x; if (i === 4 && v.move != null) td.className = v.move >= 0 ? 'rev' : 'cont'; tr.appendChild(td); });
     tb.appendChild(tr);
   }
-  tbl.appendChild(tb); wrap.appendChild(tbl); box.appendChild(wrap);
-}
-
-// ---------- 2. live signals + paper account ----------
-let paper = store.get('paper', null);
-if (!paper || typeof paper !== 'object' || !Array.isArray(paper.trades)) paper = { start: 1000, equity: 1000, open: [], trades: [] };
-function savePaper() { store.set('paper', paper); }
-function snapPools(st) {
-  const cur = Math.floor(Date.now() / STEP) * STEP;
-  if (!st.poolSnap) st.poolSnap = new Map();
-  if (!st.poolSnap.has(cur) && st.res) {
-    st.poolSnap.set(cur, { up: st.res.up.nearest, dn: st.res.down.nearest });
-    for (const k of st.poolSnap.keys()) if (k < cur - 4 * STEP) st.poolSnap.delete(k);
-  }
-}
-function onCandleClosed(st, c) {
-  if (!settings.signals || !st.poolSnap) return;
-  if (st.lastSignalT === c.t) return;
-  const pools = st.poolSnap.get(c.t);
-  if (!pools) return;
-  let dir = null, pool = null;
-  if (pools.up && c.h >= pools.up.px && c.c < pools.up.px) { dir = 'short'; pool = pools.up; }
-  else if (pools.dn && c.l <= pools.dn.px && c.c > pools.dn.px) { dir = 'long'; pool = pools.dn; }
-  if (!dir) return;
-  const liq = liqSum(st, 0, dir === 'short' ? 'S' : 'L', c.t, c.t + STEP);
-  const need = Math.max(10000, st.oiVal * 0.0001);
-  if (settings.needLiqs && liq < need) return;
-  st.lastSignalT = c.t;
-  const entry = c.c;
-  const stop = dir === 'short' ? c.h * 1.001 : c.l * 0.999;
-  const risk = Math.abs(stop - entry);
-  if (!(risk > 0) || risk / entry > 0.05) return;
-  const target = dir === 'short' ? entry - 2 * risk : entry + 2 * risk;
-  const word = dir === 'short' ? 'SHORT' : 'LONG';
-  alert_(dir === 'short' ? 'dn' : 'up', base(st.sym) + ' ' + word + ' signal: swept the ' + (dir === 'short' ? '▲' : '▼') + ' pool at ' + fp(st, pool.px) +
-    ' and closed back inside. Entry ' + fp(st, entry) + ', stop ' + fp(st, stop) + ', target ' + fp(st, target) + (liq ? ' · ' + fusd(liq) + ' liquidated' : ''));
-  if (paper.open.some((p) => p.sym === st.sym)) return;
-  const qty = (paper.equity * 0.01) / risk;                 // risk 1% of equity per trade
-  paper.open.push({ sym: st.sym, dir: dir, entry: entry, stop: stop, target: target, qty: qty, t: Date.now(), dec: st.dec, liq: liq });
-  savePaper(); paintPaper();
-}
-function checkPaper(st) {
-  if (!paper.open.length || !(st.price > 0)) return;
-  let changed = false;
-  for (const p of paper.open.slice()) {
-    if (p.sym !== st.sym) continue;
-    const px = st.price;
-    const hitStop = p.dir === 'short' ? px >= p.stop : px <= p.stop;
-    const hitTgt = p.dir === 'short' ? px <= p.target : px >= p.target;
-    const timeUp = Date.now() - p.t > 6 * 3600000;
-    if (!hitStop && !hitTgt && !timeUp) continue;
-    const exit = hitStop ? p.stop : hitTgt ? p.target : px;
-    const gross = (p.dir === 'short' ? p.entry - exit : exit - p.entry) * p.qty;
-    const fees = FEE * (p.entry + exit) * p.qty;
-    const pnl = gross - fees;
-    const R = pnl / (Math.abs(p.entry - p.stop) * p.qty);
-    paper.equity += pnl;
-    paper.open.splice(paper.open.indexOf(p), 1);
-    paper.trades.unshift({ sym: p.sym, dir: p.dir, entry: p.entry, exit: exit, pnl: pnl, R: R, t: p.t, tx: Date.now(), dec: p.dec, how: hitStop ? 'stop' : hitTgt ? 'target' : '6h' });
-    if (paper.trades.length > 300) paper.trades.length = 300;
-    toast(pnl >= 0 ? 'up' : 'dn', 'Paper ' + p.dir + ' ' + base(p.sym) + ' closed at ' + exit.toFixed(p.dec) + ' (' + (hitStop ? 'stop' : hitTgt ? 'target' : '6 h') + '): ' + (pnl >= 0 ? '+' : MINUS) + '$' + Math.abs(pnl).toFixed(2));
-    changed = true;
-  }
-  if (changed) { savePaper(); paintPaper(); }
-}
-let paperPaintAt = 0;
-function paintPaper(force) {
-  const box = $('#paperBody');
-  if (!box) return;
-  const now = Date.now();
-  if (!force && now - paperPaintAt < 1500) return;
-  paperPaintAt = now;
-  box.textContent = '';
-  let openPnl = 0;
-  for (const p of paper.open) { const st = S.get(p.sym); if (st && st.price > 0) openPnl += (p.dir === 'short' ? p.entry - st.price : st.price - p.entry) * p.qty; }
-  const n = paper.trades.length, wins = paper.trades.filter((t) => t.pnl > 0).length, sumR = paper.trades.reduce((a, t) => a + t.R, 0);
-  const cells = [
-    ['Equity', '$' + (paper.equity + openPnl).toFixed(2)],
-    ['Return', fpct(((paper.equity + openPnl) / paper.start - 1) * 100, 2) || '0.0%'],
-    ['Open trades', String(paper.open.length)],
-    ['Closed trades', String(n)],
-    ['Win rate', n ? Math.round(100 * wins / n) + '%' : '—'],
-    ['Avg R', n ? (sumR / n).toFixed(2) + 'R' : '—']
-  ];
-  const grid = document.createElement('div'); grid.className = 'rec-stats';
-  for (const c of cells) { const d = document.createElement('div'); d.innerHTML = '<span class="k"></span><span class="v"></span>'; d.children[0].textContent = c[0]; d.children[1].textContent = c[1]; grid.appendChild(d); }
-  box.appendChild(grid);
-  const wrap = document.createElement('div'); wrap.className = 'tablewrap';
-  const tbl = document.createElement('table'); tbl.className = 'rec';
-  tbl.innerHTML = '<thead><tr><th>Opened</th><th>Coin</th><th>Side</th><th>Entry</th><th>Stop / target</th><th>Result</th></tr></thead>';
-  const tb = document.createElement('tbody');
-  const addRow = (vals, cls) => { const tr = document.createElement('tr'); vals.forEach((x, i) => { const td = document.createElement('td'); td.textContent = x; if (cls[i]) td.className = cls[i]; tr.appendChild(td); }); tb.appendChild(tr); };
-  for (const p of paper.open) {
-    const st = S.get(p.sym), live = st && st.price > 0 ? (p.dir === 'short' ? p.entry - st.price : st.price - p.entry) * p.qty : 0;
-    addRow([hhmm(p.t), base(p.sym), p.dir, p.entry.toFixed(p.dec), p.stop.toFixed(p.dec) + ' / ' + p.target.toFixed(p.dec), 'open ' + (live >= 0 ? '+' : MINUS) + '$' + Math.abs(live).toFixed(2)], ['', '', p.dir === 'short' ? 'c-dn' : 'c-up', '', '', live >= 0 ? 'rev' : 'cont']);
-  }
-  for (const t of paper.trades.slice(0, 15)) {
-    addRow([hhmm(t.t), base(t.sym), t.dir, t.entry.toFixed(t.dec), t.how + ' @ ' + t.exit.toFixed(t.dec), (t.pnl >= 0 ? '+' : MINUS) + '$' + Math.abs(t.pnl).toFixed(2) + ' (' + t.R.toFixed(2) + 'R)'], ['', '', t.dir === 'short' ? 'c-dn' : 'c-up', '', '', t.pnl >= 0 ? 'rev' : 'cont']);
-  }
-  if (!paper.open.length && !n) addRow(['No signals yet. A trade opens when a 15-minute candle sweeps a nearest pool and closes back inside' + (settings.needLiqs ? ', with real liquidations on that side' : '') + '.', '', '', '', '', ''], []);
   tbl.appendChild(tb); wrap.appendChild(tbl); box.appendChild(wrap);
 }
 
@@ -2310,6 +2175,88 @@ function paintPressure(st) {
   note.className = 'note';
   note.textContent = 'aggressive buys minus sells on Bybit, since this page opened';
   el.appendChild(note);
+}
+
+
+// ---------- liquidation recorder (ground truth for calibrating the model) ----------
+let recDb = null, recQueue = [], recTotal = null, recDay = null, recFirst = null, recErr = '';
+function recOpen() {
+  return new Promise((res) => {
+    try {
+      const rq = indexedDB.open('lodestone', 1);
+      rq.onupgradeneeded = () => { const os = rq.result.createObjectStore('liqs', { autoIncrement: true }); os.createIndex('t', 't'); };
+      rq.onsuccess = () => { recDb = rq.result; res(true); };
+      rq.onerror = () => { recErr = 'This browser blocked local storage, so nothing is recorded.'; res(false); };
+    } catch (e) { recErr = 'This browser has no local database, so nothing is recorded.'; res(false); }
+  });
+}
+function recAdd(sym, side, usd, px, t, ex) { if (recDb) recQueue.push({ t: t, s: sym, side: side, px: px, usd: Math.round(usd), ex: ex }); }
+function recFlush() {
+  if (!recDb || !recQueue.length) return;
+  const batch = recQueue; recQueue = [];
+  try {
+    const tx = recDb.transaction('liqs', 'readwrite'), os = tx.objectStore('liqs');
+    for (const r of batch) os.add(r);
+    tx.oncomplete = () => { if (recTotal != null) recTotal += batch.length; if (recDay != null) recDay += batch.length; if (recFirst == null && batch.length) recFirst = batch[0].t; paintRecorder(); };
+    tx.onerror = () => { recErr = 'Saving failed: the browser may be out of space.'; paintRecorder(); };
+  } catch (e) { recErr = 'Saving failed: ' + e.message; }
+}
+function recCounts() {
+  if (!recDb) { paintRecorder(); return; }
+  try {
+    const os = recDb.transaction('liqs').objectStore('liqs');
+    const c1 = os.count(); c1.onsuccess = () => { recTotal = c1.result; paintRecorder(); };
+    const c2 = os.index('t').count(IDBKeyRange.lowerBound(Date.now() - 86400000)); c2.onsuccess = () => { recDay = c2.result; paintRecorder(); };
+    const cur = os.index('t').openCursor(); cur.onsuccess = () => { recFirst = cur.result ? cur.result.value.t : null; paintRecorder(); };
+  } catch (e) { /* counts are cosmetic */ }
+}
+function paintRecorder() {
+  const el = $('#recBody');
+  if (!el) return;
+  const live = ws && ws.readyState === 1 && Date.now() - lastMsg < 30000;
+  const days = recFirst ? (Date.now() - recFirst) / 86400000 : 0;
+  el.textContent = '';
+  const cells = [
+    ['Status', recErr ? 'Off' : live ? 'Recording' : 'Waiting for the live feed'],
+    ['Liquidations saved', recTotal == null ? '…' : recTotal.toLocaleString()],
+    ['Last 24 hours', recDay == null ? '…' : recDay.toLocaleString()],
+    ['Recording for', recFirst ? (days < 1 ? Math.round(days * 24) + ' h' : days.toFixed(1) + ' days') : '—']
+  ];
+  const grid = document.createElement('div'); grid.className = 'rec-stats';
+  for (const c of cells) { const d = document.createElement('div'); d.innerHTML = '<span class="k"></span><span class="v"></span>'; d.children[0].textContent = c[0]; d.children[1].textContent = c[1]; grid.appendChild(d); }
+  el.appendChild(grid);
+  const p = document.createElement('p'); p.className = 'note';
+  p.textContent = recErr || (days >= 7 ? 'Enough data to calibrate. Export the file and send it to Claude.' : 'Aim for 7 to 14 days. Keep this tab open on a Mac that does not sleep.');
+  el.appendChild(p);
+}
+function recExport() {
+  if (!recDb) return;
+  const note = $('#recNote');
+  note.textContent = 'Preparing the file…';
+  try {
+    const rq = recDb.transaction('liqs').objectStore('liqs').getAll();
+    rq.onsuccess = () => {
+      const rows = rq.result;
+      const blob = new Blob([JSON.stringify({ app: 'LODESTONE', kind: 'liquidations', exported: Date.now(), rows: rows })], { type: 'application/json' });
+      const a = document.createElement('a');
+      const d = new Date();
+      a.href = URL.createObjectURL(blob);
+      a.download = 'lodestone-liquidations-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '.json';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      note.textContent = rows.length.toLocaleString() + ' liquidations exported (' + (blob.size / 1048576).toFixed(1) + ' MB).';
+    };
+  } catch (e) { note.textContent = 'Export failed: ' + e.message; }
+}
+let recClearArmed = 0;
+function recClear() {
+  const btn = $('#recClear2'), note = $('#recNote');
+  if (Date.now() - recClearArmed > 5000) { recClearArmed = Date.now(); btn.textContent = 'Tap again to delete everything'; setTimeout(() => { btn.textContent = 'Delete recording'; }, 5000); return; }
+  recClearArmed = 0; btn.textContent = 'Delete recording';
+  try {
+    const tx = recDb.transaction('liqs', 'readwrite'); tx.objectStore('liqs').clear();
+    tx.oncomplete = () => { recTotal = 0; recDay = 0; recFirst = null; note.textContent = 'Recording deleted.'; paintRecorder(); };
+  } catch (e) { note.textContent = 'Could not delete: ' + e.message; }
 }
 
 // ---------- keep awake (for a Mac left logging) ----------
