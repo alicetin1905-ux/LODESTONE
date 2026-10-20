@@ -135,7 +135,15 @@ textarea{width:100%;resize:vertical;font:13px/1.4 var(--mono)}
 .detail{padding:6px 4px 18px;display:flex;flex-direction:column;gap:14px}
 .posn{display:flex;flex-wrap:wrap;gap:6px 18px;font:12.5px/1.3 var(--mono);color:var(--muted)}
 .posn b{color:var(--fg);font-weight:600}
-.candles{width:100%;height:260px;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.candles{width:100%;height:clamp(340px,60vh,520px);background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.clegend{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;margin:0 0 6px;font:12px/1.3 var(--mono);color:var(--muted)}
+.clegend .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.clegend .sw.heat{width:30px;background:linear-gradient(90deg,#482878,#21918c,#fde725)}
+.clegend .sw.up{background:var(--up)} .clegend .sw.dn{background:var(--dn)}
+.clegend .sw.dot{border-radius:50%;background:var(--fg)}
+.clegend .tog{margin-left:auto;background:var(--raise);border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer}
+.clegend .tog[aria-pressed="false"]{color:var(--faint);text-decoration:line-through}
+.cnote{margin:6px 0 0;font-size:12px;color:var(--muted)}
 .chart{display:block;width:100%;height:210px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
 .col{min-width:0}
@@ -153,7 +161,6 @@ textarea{width:100%;resize:vertical;font:13px/1.4 var(--mono)}
 .liqs li{display:grid;grid-template-columns:4.2rem 4.5rem minmax(0,1fr) 5rem;gap:8px;padding:4px 0;border-bottom:1px dashed var(--line);font:12.5px/1.2 var(--mono);font-variant-numeric:tabular-nums;color:var(--muted)}
 .liqs li .L{color:var(--dn)} .liqs li .S{color:var(--up)}
 .facts{margin:0;font-size:12px;color:var(--muted)}
-.heat{display:block;width:100%;height:220px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
 .walls{display:flex;flex-direction:column;gap:6px}
 .wall-line{margin:0;display:flex;flex-wrap:wrap;gap:6px;align-items:center;font:12.5px/1.3 var(--mono);color:var(--muted)}
 .wall{background:var(--raise);border-radius:999px;padding:3px 8px;color:var(--fg);font-variant-numeric:tabular-nums}
@@ -537,7 +544,8 @@ const settings = {
   alerts: store.get('alerts', true) !== false,
   alertPct: Number(store.get('alertPct', 0.5)),
   sound: store.get('sound', true) !== false,
-  awake: store.get('awake', false) === true
+  awake: store.get('awake', false) === true,
+  heat: store.get('heat', true) !== false
 };
 if (!settings.coins.length) settings.coins = DEFAULT_COINS.slice();
 // coins added to the default list after release also join a saved list, once
@@ -978,10 +986,15 @@ function makeRow(st) {
     '<div class="detail" id="' + id + '" hidden>' +
       '<div class="posn"></div>' +
       '<div class="posn flow"></div>' +
-      '<div class="candles" role="img" aria-label="15-minute candles with the nearest pools"></div>' +
+      '<div class="col">' +
+        '<div class="clegend"><span><i class="sw heat"></i>pools over time</span><span><i class="sw up"></i>shorts liquidated</span>' +
+          '<span><i class="sw dn"></i>longs liquidated</span><span><i class="sw dot"></i>real liquidations</span>' +
+          '<button class="tog" type="button" aria-pressed="true">Heatmap</button></div>' +
+        '<div class="candles" role="img" aria-label="15-minute candles over the liquidation heatmap, with the pools now at the right edge"></div>' +
+        '<p class="cnote"></p>' +
+      '</div>' +
       '<div class="col"><h3>Short-term vs long-term pools</h3><div class="hz"></div></div>' +
       '<canvas class="chart" role="img" aria-label="Estimated liquidation map within 15% of price"></canvas>' +
-      '<div class="col"><h3>Heatmap · last 3 days</h3><canvas class="heat" role="img" aria-label="How the pools built up and were cleared over the last 3 days"></canvas></div>' +
       '<div class="col"><h3>Order-book walls (Bybit)</h3><div class="walls"></div></div>' +
       '<div class="cols">' +
         '<div class="col"><h3 class="h-up">Above price · shorts liquidated</h3><ol class="peaks up"></ol></div>' +
@@ -998,9 +1011,15 @@ function makeRow(st) {
     dn: q('.cl.dn'), dnP: q('.cl.dn .cp'), dnD: q('.cl.dn .cd'),
     strip: q('.strip'), det: q('.detail'), posn: q('.posn'), candles: q('.candles'), chart: q('.chart'),
     pUp: q('.peaks.up'), pDn: q('.peaks.dn'), liqs: q('.liqs'), facts: q('.facts'),
-    flow: q('.flow'), hz: q('.hz'), heat: q('.heat'), walls: q('.walls')
+    flow: q('.flow'), hz: q('.hz'), heatTog: q('.clegend .tog'), cnote: q('.cnote'), walls: q('.walls')
   };
   st.el.btn.addEventListener('click', () => toggle(st.sym));
+  st.el.heatTog.setAttribute('aria-pressed', String(settings.heat));
+  st.el.heatTog.addEventListener('click', () => {
+    settings.heat = !settings.heat; store.set('heat', settings.heat);
+    for (const o of S.values()) if (o.el) o.el.heatTog.setAttribute('aria-pressed', String(settings.heat));
+    if (detailChart && detailChart.layer) detailChart.layer.update();
+  });
   return li;
 }
 
@@ -1228,10 +1247,10 @@ function openCandles(st) {
     const el = st.el.candles;
     const chart = LightweightCharts.createChart(el, {
       width: el.clientWidth || 340, height: el.clientHeight || 260,
-      layout: { background: { type: 'solid', color: C.panel }, textColor: C.muted, fontFamily: C.mono, fontSize: 11 },
+      layout: { background: { type: 'solid', color: C.panel }, textColor: C.muted, fontFamily: C.mono, fontSize: 12 },
       grid: { vertLines: { color: C.line }, horzLines: { color: C.line } },
       rightPriceScale: { borderColor: C.line, scaleMargins: { top: 0.08, bottom: 0.08 } },
-      timeScale: { borderColor: C.line, timeVisible: true, secondsVisible: false, rightOffset: 4 },
+      timeScale: { borderColor: C.line, timeVisible: true, secondsVisible: false, rightOffset: 10 },
       crosshair: { mode: 0 },
       handleScroll: true, handleScale: true
     });
@@ -1248,13 +1267,86 @@ function openCandles(st) {
         return res;
       }
     });
-    detailChart = { sym: st.sym, chart: chart, series: series, lines: [], lineKey: '', markKey: '', n: 0, lastT: 0 };
     const cs = st.candles.slice(-288);
+    detailChart = { sym: st.sym, chart: chart, series: series, lines: [], lineKey: '', markKey: '', layerKey: '', n: 0, lastT: 0, t0: cs.length ? cs[0].t : 0 };
+    detailChart.layer = poolLayer(st);
+    series.attachPrimitive(detailChart.layer);
     series.setData(cs.map((c) => ({ time: lwTime(c.t), open: c.o, high: c.h, low: c.l, close: c.c })));
     detailChart.n = cs.length; detailChart.lastT = cs.length ? cs[cs.length - 1].t : 0;
-    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, cs.length - 96), to: cs.length + 3 });
+    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, cs.length - 96), to: cs.length + 10 });
     updateCandles(st);
   } catch (e) { closeCandles(); }
+}
+// Layer inside the candle chart (a Lightweight Charts series primitive), redrawn with every pan and zoom:
+//  - behind the candles: the 3-day heatmap, each column the model's pools at that time
+//  - at the right edge, also behind the candles: the pools now, as horizontal bars (green above price, red below)
+function poolLayer(st) {
+  const L = { chart: null, series: null, req: null };
+  const view = (z, fn) => {
+    const rend = { draw: (target) => target.useBitmapCoordinateSpace((sc) => { try { fn(st, L, sc); } catch (e) { /* layer is optional */ } }) };
+    return { zOrder: () => z, renderer: () => rend };
+  };
+  const views = [view('bottom', drawHeatLayer), view('bottom', drawNowLayer)];
+  return {
+    attached: (p) => { L.chart = p.chart; L.series = p.series; L.req = p.requestUpdate; },
+    detached: () => { L.req = null; },
+    paneViews: () => views,
+    update: () => { if (L.req) L.req(); }
+  };
+}
+function drawHeatLayer(st, L, sc) {
+  const hm = st.heat, dc = detailChart;
+  if (!settings.heat || !hm || !hm.img || !dc || dc.sym !== st.sym) return;
+  const ts = L.chart.timeScale(), lim = Math.round(LIQ_DEFAULTS.searchPct / LIQ_DEFAULTS.binPct), bp = LIQ_DEFAULTS.binPct;
+  // x of a candle's right edge, from the first and last candle (candles are evenly spaced)
+  const xa = ts.timeToCoordinate(lwTime(dc.t0)), xb = ts.timeToCoordinate(lwTime(dc.lastT));
+  if (xa == null || xb == null || !(dc.lastT > dc.t0)) return;
+  const sp = (xb - xa) / ((dc.lastT - dc.t0) / STEP);
+  const lx = (t) => xa + ((t - dc.t0) / STEP + 0.5) * sp;
+  // column i holds the map at the close of its candle, so it covers the next `every` candles
+  const x0 = lx(hm.t0), x1 = lx(hm.t0 + hm.img.width * hm.every * STEP), xEnd = lx(dc.lastT);
+  const yTop = L.series.priceToCoordinate(hm.price * (1 + (lim + 0.5) * bp));
+  const yBot = L.series.priceToCoordinate(hm.price * (1 - (lim + 0.5) * bp));
+  if (yTop == null || yBot == null) return;
+  const ctx = sc.context, hr = sc.horizontalPixelRatio, vr = sc.verticalPixelRatio;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, Math.max(0, xEnd * hr), sc.bitmapSize.height); ctx.clip();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(hm.img, x0 * hr, yTop * vr, (x1 - x0) * hr, (yBot - yTop) * vr);
+  ctx.restore();
+}
+function drawNowLayer(st, L, sc) {
+  const r = st.res;
+  if (!r || !(st.price > 0)) return;
+  const pr = r.prof, lim = Math.round(LIQ_DEFAULTS.searchPct / LIQ_DEFAULTS.binPct);
+  const M = profileMax(pr, lim);
+  if (!(M > 0)) return;
+  const ctx = sc.context, hr = sc.horizontalPixelRatio, vr = sc.verticalPixelRatio, W = sc.bitmapSize.width;
+  const maxLen = Math.min(100, 0.24 * sc.mediaSize.width) * hr;
+  ctx.globalAlpha = 0.5;
+  for (let k = 1; k <= lim; k++) {
+    for (let s = 0; s < 2; s++) {
+      const j = s === 0 ? pr.half + k : pr.half - k;
+      const v = s === 0 ? pr.SS[j] : pr.LS[j];
+      if (!(v > 0)) continue;
+      const px = pr.lo + j * pr.bw;
+      const ya = L.series.priceToCoordinate(px + pr.bw / 2), yb = L.series.priceToCoordinate(px - pr.bw / 2);
+      if (ya == null || yb == null) continue;
+      const len = v / M * maxLen;
+      if (len < 1) continue;
+      ctx.fillStyle = s === 0 ? C.up : C.dn;
+      ctx.fillRect(W - len, ya * vr, len, Math.max(1, (yb - ya) * vr));
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+function paintHeatNote(st) {
+  const el = st.el && st.el.cnote;
+  if (!el) return;
+  const hm = st.heat;
+  el.textContent = hm && hm.err ? 'Heatmap unavailable: ' + hm.err
+    : !hm ? 'Building the 3-day heatmap…'
+    : 'Behind the candles: estimated pools over the last 3 days, brighter = bigger; a band that ends where price ran through it was liquidated. Bars at the right edge: the pools now. Drag or pinch to zoom.';
 }
 function closeCandles() {
   if (detailChart) { try { detailChart.chart.remove(); } catch (e) { /* already gone */ } }
@@ -1271,19 +1363,22 @@ function updateCandles(st) {
     const r = st.res;
     if (r) {
       const want = [];
-      if (r.up.nearest) want.push([r.up.nearest.px, C.up, 0, '▲ pool ' + fusd(r.up.nearest.size)]);
-      if (r.down.nearest) want.push([r.down.nearest.px, C.dn, 0, '▼ pool ' + fusd(r.down.nearest.size)]);
-      if (r.up.major && r.up.nearest && r.up.major.px !== r.up.nearest.px) want.push([r.up.major.px, C.up, 2, '▲ max ' + fusd(r.up.major.size)]);
-      if (r.down.major && r.down.nearest && r.down.major.px !== r.down.nearest.px) want.push([r.down.major.px, C.dn, 2, '▼ max ' + fusd(r.down.major.size)]);
-      if (st.walls) for (const wl of st.walls.asks.concat(st.walls.bids)) want.push([wl.px, C.muted, 1, 'wall ' + fusd(wl.usd)]);
+      if (r.up.nearest) want.push([r.up.nearest.px, C.up, 0, '▲ pool ' + fusd(r.up.nearest.size), true]);
+      if (r.down.nearest) want.push([r.down.nearest.px, C.dn, 0, '▼ pool ' + fusd(r.down.nearest.size), true]);
+      if (r.up.major && r.up.nearest && r.up.major.px !== r.up.nearest.px) want.push([r.up.major.px, C.up, 2, '▲ max ' + fusd(r.up.major.size), true]);
+      if (r.down.major && r.down.nearest && r.down.major.px !== r.down.nearest.px) want.push([r.down.major.px, C.dn, 2, '▼ max ' + fusd(r.down.major.size), true]);
+      // order-book walls: thin dotted line with a title, no price-axis label, so the axis stays readable
+      if (st.walls) for (const wl of st.walls.asks.concat(st.walls.bids)) want.push([wl.px, C.faint, 1, 'wall ' + fusd(wl.usd), false]);
       const near = [r.up.nearest, r.down.nearest].filter(Boolean).map((c) => c.px);
       dc.span = near.length ? [Math.min.apply(null, near), Math.max.apply(null, near)] : null;
       const key = want.map((x) => x[0].toFixed(st.dec) + x[3]).join('|');
       if (key !== dc.lineKey) {
         dc.lineKey = key;
         for (const l of dc.lines) dc.series.removePriceLine(l);
-        dc.lines = want.map((x) => dc.series.createPriceLine({ price: x[0], color: x[1], lineWidth: 1, lineStyle: x[2], axisLabelVisible: true, title: x[3] }));
+        dc.lines = want.map((x) => dc.series.createPriceLine({ price: x[0], color: x[1], lineWidth: x[4] ? 2 : 1, lineStyle: x[2], axisLabelVisible: x[4], title: x[3] }));
       }
+      const lk = st.calcAt + '|' + (st.heat ? st.heat.at : 0);
+      if (lk !== dc.layerKey) { dc.layerKey = lk; dc.layer.update(); }
     }
     // real liquidations as markers on their candle
     const big = Math.max(10000, st.oiVal * 0.0002);
@@ -1362,7 +1457,7 @@ function paintDetail(st) {
   fillLiqs(st);
   paintWalls(st);
   if (Date.now() - (st.flowAt || 0) > 2000) { st.flowAt = Date.now(); paintPressure(st); }
-  if (st.heat && st.heat.price && !st.heatBusy) drawHeatmap(st);
+  if (st.status === 'ready' && !st.heatBusy && (!st.heat || Date.now() - st.heat.at > 15 * 60000)) buildHeatmap(st);
   const r = st.res;
   if (!r) return;
   const key = st.calcAt + '|' + Math.round(Math.log(st.price) / 0.0005);
@@ -1869,7 +1964,8 @@ function workerMain() {
   }
   function heatmap(job) {
     const c = job.candles, venues = toMaps(job.venues), N = c.length, cols = [];
-    for (let i = N - 1 - (job.cols - 1) * 4; i <= N - 1; i += 4) {
+    const every = job.every || 4;
+    for (let i = N - 1 - (job.cols - 1) * every; i <= N - 1; i += every) {
       if (i < 50) { cols.push(null); continue; }
       const win = c.slice(Math.max(0, i - job.look + 1), i + 1);
       // map at that hour (centred on that hour's price), re-gridded onto today's price axis
@@ -1879,8 +1975,10 @@ function workerMain() {
       for (let j = 0; j < pr.SS.length; j++) {
         const v = pr.SS[j] + pr.LS[j];
         if (!(v > 0)) continue;
-        const k = Math.round(((pr.lo + j * pr.bw) / job.price - 1) / LIQ_DEFAULTS.binPct) + lim;
-        if (k >= 0 && k <= 2 * lim) col[k] += v;
+        // split between the two nearest bins of today's axis, so the re-gridding leaves no empty rows
+        const x = ((pr.lo + j * pr.bw) / job.price - 1) / LIQ_DEFAULTS.binPct + lim, k = Math.floor(x), f = x - k;
+        if (k >= 0 && k <= 2 * lim) col[k] += v * (1 - f);
+        if (k + 1 >= 0 && k + 1 <= 2 * lim) col[k + 1] += v * f;
       }
       cols.push({ t: c[i].t, close: c[i].c, v: col });
     }
@@ -2030,63 +2128,52 @@ function paintWalls(st) {
 
 // ---------- 5. heatmap (open coin) ----------
 async function buildHeatmap(st) {
-  st.heat = null; st.heatBusy = true; drawHeatmap(st);
+  if (st.heatBusy) return;
+  st.heatBusy = true; paintHeatNote(st);
   try {
-    st.heat = await runJob({ kind: 'heatmap', candles: st.candles.slice(-1000), venues: venuesOf(st), params: modelParams(st), look: Math.min(672, LOOKBACK[settings.lookback]), cols: 72, price: st.price });
-    st.heat.price = st.price; st.heat.at = Date.now();
-  } catch (e) { st.heat = { err: e.message }; }
+    const hm = await runJob({ kind: 'heatmap', candles: st.candles.slice(-1000), venues: venuesOf(st), params: modelParams(st), look: Math.min(672, LOOKBACK[settings.lookback]), cols: 144, every: 2, price: st.price });
+    hm.price = st.price; hm.at = Date.now(); hm.every = 2;
+    heatImage(hm);
+    st.heat = hm;
+  } catch (e) { st.heat = { err: e.message, at: Date.now() }; }
   st.heatBusy = false;
-  drawHeatmap(st);
+  paintHeatNote(st);
+  if (detailChart && detailChart.sym === st.sym && detailChart.layer) detailChart.layer.update();
 }
-function heatColor(t) {
+function heatRGB(t) {
   // dark indigo -> violet -> teal -> yellow
   const stops = [[17, 20, 31], [72, 40, 120], [33, 145, 140], [253, 231, 37]];
   const x = Math.min(0.999, Math.max(0, t)) * (stops.length - 1), i = Math.floor(x), f = x - i;
   const a = stops[i], b = stops[i + 1];
-  return 'rgb(' + Math.round(a[0] + (b[0] - a[0]) * f) + ',' + Math.round(a[1] + (b[1] - a[1]) * f) + ',' + Math.round(a[2] + (b[2] - a[2]) * f) + ')';
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
 }
-function drawHeatmap(st) {
-  const cv = st.el.heat;
-  if (!cv) return;
-  const ctx = setupCanvas(cv);
-  if (!ctx) return;
-  const w = cv._w, h = cv._h, m = { l: 8, r: 54, t: 8, b: 20 };
-  ctx.clearRect(0, 0, w, h);
-  ctx.font = '10px ' + C.mono;
-  const hm = st.heat;
-  if (!hm || st.heatBusy || hm.err) {
-    ctx.fillStyle = C.muted; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(hm && hm.err ? 'Heatmap unavailable: ' + hm.err : 'Building the 3-day heatmap…', w / 2, h / 2);
-    return;
-  }
-  const cols = hm.cols.filter(Boolean);
-  if (!cols.length) return;
-  const nb = cols[0].v.length, span = LIQ_DEFAULTS.searchPct, P = hm.price;
-  const pw = w - m.l - m.r, ph = h - m.t - m.b;
-  let M = 0;
-  for (const c of cols) for (let k = 0; k < nb; k++) if (c.v[k] > M) M = c.v[k];
-  const cw = pw / cols.length, rh = ph / nb;
+// one pixel per column x 0.1% price bin, top row = highest price; drawn stretched into the candle chart
+function heatImage(hm) {
+  const cols = hm.cols, n = cols.length, first = cols.findIndex(Boolean);
+  if (first < 0) return;
+  const nb = cols[first].v.length;
+  const vals = [];
+  for (const c of cols) if (c) for (let k = 0; k < nb; k++) if (c.v[k] > 0) vals.push(c.v[k]);
+  if (!vals.length) return;
+  vals.sort((x, y) => x - y);
+  const M = vals[Math.floor(vals.length * 0.995)] || vals[vals.length - 1];   // ignore the odd extreme cell
+  const cv = document.createElement('canvas');
+  cv.width = n; cv.height = nb;
+  const g = cv.getContext('2d'), im = g.createImageData(n, nb), d = im.data;
   cols.forEach((c, i) => {
+    if (!c) return;
     for (let k = 0; k < nb; k++) {
       const v = c.v[k];
       if (!(v > 0)) continue;
-      ctx.fillStyle = heatColor(Math.sqrt(v / M));
-      ctx.fillRect(m.l + i * cw, m.t + (nb - 1 - k) * rh, Math.ceil(cw), Math.ceil(rh) + 0.5);
+      const t = Math.min(1, v / M);
+      if (t < 0.1) continue;           // leave small pools empty so only real clusters light up
+      const rgb = heatRGB(0.25 + 0.75 * t), o = ((nb - 1 - k) * n + i) * 4;
+      d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = Math.round(255 * (0.2 + 0.7 * t));
     }
   });
-  const Y = (px) => m.t + ph * (0.5 - (px / P - 1) / (2 * span));
-  ctx.beginPath();
-  cols.forEach((c, i) => { const x = m.l + (i + 0.5) * cw, y = Y(c.close); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-  ctx.strokeStyle = C.fg; ctx.lineWidth = 1.25; ctx.stroke();
-  ctx.fillStyle = C.muted; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  for (const pct of [-15, -10, -5, 0, 5, 10, 15]) {
-    const y = Y(P * (1 + pct / 100));
-    ctx.fillText(fp(st, P * (1 + pct / 100)), w - m.r + 4, Math.min(Math.max(y, m.t + 5), h - m.b - 5));
-  }
-  ctx.textBaseline = 'top';
-  ctx.fillText(hhmm(cols[0].t), m.l, h - m.b + 5);
-  ctx.textAlign = 'right';
-  ctx.fillText('now', m.l + pw, h - m.b + 5);
+  g.putImageData(im, 0, 0);
+  hm.img = cv;
+  hm.t0 = cols[first].t - first * hm.every * STEP;
 }
 
 // ---------- 6. short-term vs long-term pools (open coin) ----------
