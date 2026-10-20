@@ -10,9 +10,12 @@
 //  - Every 15m candle where open interest ROSE = new leveraged positions, opened at the candle VWAP.
 //    Split long/short by candle direction (aggressor side gets up to 75%).
 //  - Each new position is spread over leverage tiers; liq price uses Bybit's isolated formula
-//    long = entry*(1 - 1/L + MMR), short = entry*(1 + 1/L - MMR), L capped at the symbol's max leverage.
+//    long = entry*(1 - 1/L + MMR), short = entry*(1 + 1/L - MMR). Tiers above the symbol's max leverage are
+//    folded into one tier at the max and the weights renormalised, so they don't all pile up on one level.
 //  - Candles where open interest FELL close positions pro-rata (everything shrinks by OI_after/OI_before).
 //  - A level that price has traded through since the position was opened is gone (already liquidated).
+//    If the opening candle's own range already reached it, it counts half: we can't tell whether the wick
+//    came before or after the entry.
 //  - What is left is binned (0.1% of price), smoothed, and scanned for peaks above and below price.
 function liqMap(candles, oiByTs, p) {
   const N = candles.length;
@@ -45,7 +48,7 @@ function liqMap(candles, oiByTs, p) {
           const vwap = k.v > 0 && k.q > 0 ? k.q / k.v : (k.h + k.l + k.c) / 3;
           const rng = k.h - k.l;
           const dir = rng > 0 ? (k.c - k.o) / rng : 0;
-          births.push({ i, v, e: vwap, n: d * vwap, wL: 0.5 + 0.25 * dir });
+          births.push({ i, v, e: vwap, n: d * vwap, wL: 0.5 + 0.25 * dir, l: k.l, h: k.h });
         } else if (d < 0) {
           cum *= b / a;
         }
@@ -54,7 +57,15 @@ function liqMap(candles, oiByTs, p) {
     }
   });
 
-  const tiers = p.tiers.map(([L, w]) => [Math.min(L, p.maxLev), w]);
+  // leverage mix for this symbol: the first tier above max leverage moves down to the max (unless the max is a tier
+  // already), the rest are dropped, then the weights are renormalised to sum to 1
+  const kept = [];
+  for (const [L, w] of p.tiers.slice().sort((a, b) => a[0] - b[0])) {
+    if (L <= p.maxLev) kept.push([L, w]);
+    else if (!kept.some((t) => t[0] === p.maxLev)) kept.push([p.maxLev, w]);
+  }
+  const wSum = kept.reduce((s, t) => s + t[1], 0);
+  const tiers = kept.map(([L, w]) => [L, w / wSum]);
   const bw = price * p.binPct;
   const half = Math.round(p.rangePct / p.binPct);
   const nb = 2 * half + 1;
@@ -68,11 +79,11 @@ function liqMap(candles, oiByTs, p) {
       const sq = B.e * (1 + 1 / L - p.mmr);
       if (lq < mn) {
         const j = Math.round((lq - lo) / bw);
-        if (j >= 0 && j < half) LH[j] += B.n * B.wL * w * surv;
+        if (j >= 0 && j < half) LH[j] += B.n * B.wL * w * surv * (lq < B.l ? 1 : 0.5);
       }
       if (sq > mx) {
         const j = Math.round((sq - lo) / bw);
-        if (j > half && j < nb) SH[j] += B.n * (1 - B.wL) * w * surv;
+        if (j > half && j < nb) SH[j] += B.n * (1 - B.wL) * w * surv * (sq > B.h ? 1 : 0.5);
       }
     }
   }
@@ -140,7 +151,7 @@ function liqMap(candles, oiByTs, p) {
 
 const LIQ_DEFAULTS = {
   stepMs: 900000,
-  // leverage mix assumed for new positions (weights sum to 1); tiers above a coin's max are capped at the max
+  // leverage mix assumed for new positions (weights sum to 1); tiers above a coin's max are folded into the max
   tiers: [[5, 0.10], [10, 0.25], [20, 0.20], [25, 0.20], [50, 0.15], [100, 0.10]],
   binPct: 0.001,     // 0.1% bins
   rangePct: 0.25,    // histogram covers +/-25%
