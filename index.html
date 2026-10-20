@@ -2166,9 +2166,11 @@ function heatImage(hm) {
       const v = c.v[k];
       if (!(v > 0)) continue;
       const t = Math.min(1, v / M);
-      if (t < 0.1) continue;           // leave small pools empty so only real clusters light up
-      const rgb = heatRGB(0.25 + 0.75 * t), o = ((nb - 1 - k) * n + i) * 4;
-      d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = Math.round(255 * (0.2 + 0.7 * t));
+      if (t < 0.2) continue;           // leave small pools empty so only real clusters light up
+      // eased, so only the core of a cluster turns bright; capped at 55% so candles always stay on top visually
+      const u = Math.pow((t - 0.2) / 0.8, 1.2);
+      const rgb = heatRGB(0.2 + 0.8 * u), o = ((nb - 1 - k) * n + i) * 4;
+      d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = Math.round(255 * (0.15 + 0.45 * u));
     }
   });
   g.putImageData(im, 0, 0);
