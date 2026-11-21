@@ -1,0 +1,46 @@
+# Publishes OKX + MEXC open interest for the page on the `data` branch (data/oi.json there).
+# See scripts/collect-oi.mjs. The branch holds a single commit that every run replaces.
+name: Collect open interest
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect-oi
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: main
+      - name: Check out the data branch
+        run: |
+          if git ls-remote --exit-code --heads "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" data; then
+            git clone --depth 1 --branch data "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" data
+          else
+            git init -b data data
+            git -C data remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}"
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Collect
+        run: node main/scripts/collect-oi.mjs main/index.html data
+      - name: Publish
+        run: |
+          cd data
+          printf 'Open interest from OKX and MEXC for LODESTONE, written by .github/workflows/collect-oi.yml on main.\n' > README.md
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add oi.json mexc-raw.json README.md
+          if git rev-parse --verify -q HEAD >/dev/null; then git commit -q --amend -m 'Open interest data'; else git commit -q -m 'Open interest data'; fi
+          git push -q -f origin data

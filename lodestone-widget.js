@@ -165,12 +165,14 @@ const LIQ_DEFAULTS = {
 
 // ---------------------------------------------------------------------------
 // LODESTONE widget: the 3 coins whose nearest liquidation pool is closest to price.
-// Same model and defaults as the LODESTONE page: Bybit + Binance open interest,
+// Same model and defaults as the LODESTONE page: Bybit + Binance + OKX + MEXC open interest
+// (OKX and MEXC from the file the page's GitHub Action publishes),
 // 10-day lookback, retail 5-100x leverage mix, cluster = peak >= 30% of the biggest.
 // Widget parameter (long-press the widget > Edit Widget > Parameter): an optional
 // coin list such as "BTC, ETH, SOL". Leave it empty for the full LODESTONE list.
 // ---------------------------------------------------------------------------
 const PAGE = 'https://alicetin1905-ux.github.io/LODESTONE/';
+const EXTRA_URL = 'https://raw.githubusercontent.com/alicetin1905-ux/LODESTONE/data/oi.json';
 const DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'DOGE', 'SUI', 'ENA', 'WLD', 'DYDX', 'GALA', 'EGLD', 'NEAR', 'XLM', 'BLUR', 'SAND', 'AXS', 'ZIL', 'CHZ', 'GRAM', '1000PEPE', 'KAITO', 'XRP', 'ATOM', '1000BONK', 'QNT'];
 const RETAIL = [[5, 0.10], [10, 0.25], [20, 0.20], [25, 0.20], [50, 0.15], [100, 0.10]];
 const STEP = 900000, KEEP = 1000, DAY = 86400000;
@@ -281,11 +283,21 @@ async function updateCoin(cache, base) {
   c.at = now;
 }
 
-function computeCoin(c) {
+// OKX / MEXC series on the 15-minute grid, rescaled to Bybit's units from the price ratio (as on the page)
+function extraMap(s, price) {
+  if (!s || !(s.px > 0) || !(price > 0)) return null;
+  const scale = Math.pow(10, Math.round(Math.log10(price / s.px)));
+  const m = new Map();
+  s.v.forEach((v, i) => { if (v != null) m.set(s.t0 + i * STEP, v / scale); });
+  return m.size ? m : null;
+}
+
+function computeCoin(c, base, extra) {
   const candles = c.candles.map((a) => ({ t: a[0], o: a[1], h: a[2], l: a[3], c: a[4], v: a[5], q: a[6] }));
+  const price = candles[candles.length - 1].c;
   const venues = [new Map(c.oi)];
   if (c.bin.length) venues.push(new Map(c.bin));
-  const price = candles[candles.length - 1].c;
+  if (extra) for (const k of ['okx', 'mexc']) { const m = extraMap(extra[k][base], price); if (m) venues.push(m); }
   const r = liqMap(candles, venues, Object.assign({}, LIQ_DEFAULTS, { tiers: RETAIL, sigFrac: 0.3, mmr: c.info.mmr, maxLev: c.info.maxLev, price: price }));
   const pick = (x) => (x ? { px: x.px, size: x.size } : null);
   return { price: price, dec: c.info.dec, up: pick(r.up.nearest), dn: pick(r.down.nearest) };
@@ -305,12 +317,14 @@ async function refresh(cache, coins, budgetMs) {
   };
   const jobs = [];
   for (let k = 0; k < Math.min(6, coins.length); k++) jobs.push(worker());
+  let extra = null;
+  jobs.push(getJSON(EXTRA_URL + '?t=' + Math.floor(Date.now() / 300000)).then((j) => { if (j && j.v === 1 && j.okx && j.mexc) extra = j; }).catch(() => {}));
   await Promise.all(jobs);
   const results = [];
   for (const b of coins) {
     const c = cache.coins[b + 'USDT'];
     if (!c || !c.info || c.candles.length < 100 || c.oi.length < 50) continue;
-    try { const r = computeCoin(c); r.coin = b; r.at = c.at; results.push(r); } catch (e) { errors.push(b + ': ' + e.message); }
+    try { const r = computeCoin(c, b, extra); r.coin = b; r.at = c.at; results.push(r); } catch (e) { errors.push(b + ': ' + e.message); }
   }
   for (const k of Object.keys(cache.coins)) if (coins.indexOf(k.replace(/USDT$/, '')) < 0) delete cache.coins[k];
   return { results: results, errors: errors, at: Date.now() };
