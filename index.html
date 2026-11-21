@@ -232,7 +232,7 @@ a.btn{color:var(--fg);text-decoration:none;display:inline-block}
     <div class="field"><label for="mixIn">Leverage mix</label><select id="mixIn"><option value="retail">Retail mix: 5–100x</option><option value="even">Even split: 10/25/50/100x</option></select></div>
     <div class="field"><label for="lbIn">Lookback</label><select id="lbIn"><option value="3">3 days</option><option value="7">7 days</option><option value="10">10 days</option></select></div>
     <div class="field"><label for="sigIn">Cluster threshold</label><select id="sigIn"><option value="0.2">20% of strongest</option><option value="0.3">30% of strongest</option><option value="0.4">40% of strongest</option></select></div>
-    <div class="field"><label>Exchanges</label><label class="check"><input type="checkbox" id="binIn"> Add Binance open interest</label></div>
+    <div class="field"><label>Exchanges</label><label class="check"><input type="checkbox" id="binIn"> Add Binance open interest</label><label class="check"><input type="checkbox" id="okxIn"> Add OKX open interest</label><label class="check"><input type="checkbox" id="mexcIn"> Add MEXC open interest</label></div>
     <h2>Alerts</h2>
     <div class="field"><label>Alerts</label><label class="check"><input type="checkbox" id="alertIn"> Alert on near pools and sweeps</label></div>
     <div class="field"><label for="alertPctIn">Alert when price is within</label><select id="alertPctIn"><option value="0.3">0.3% of a pool</option><option value="0.5">0.5% of a pool</option><option value="1">1% of a pool</option></select></div>
@@ -290,14 +290,14 @@ a.btn{color:var(--fg);text-decoration:none;display:inline-block}
   <details class="how">
     <summary>How the levels are estimated</summary>
     <ul>
-      <li>Data comes from public exchange APIs: Bybit's 15-minute candles and open-interest history, plus Binance's open-interest history for the same coin when it lists it. Prices, liquidations and funding stream live.</li>
+      <li>Data comes from public exchange APIs: Bybit's 15-minute candles and open-interest history, plus Binance's open-interest history for the same coin when it lists it. OKX and MEXC don't let browsers read their open interest, so a GitHub Action collects it every 5 minutes and the page loads that file: OKX with its full 15-minute history, MEXC from snapshots (it has no history), so MEXC builds up from the day collection started. Prices, liquidations and funding stream live.</li>
       <li>Each 15-minute candle where open interest rose counts as new positions opened at that candle's average price. A green candle leans the new positions long, a red one leans them short.</li>
       <li>New positions are spread across the leverage mix you pick (leverage above the coin's max is folded into the max), and get Bybit's isolated liquidation price: longs at entry × (1 − 1/leverage + maintenance margin), shorts at entry × (1 + 1/leverage − maintenance margin).</li>
       <li>When an exchange's open interest falls, its open positions shrink by the same share. Any level that price has already traded through is removed. A level the opening candle itself already reached counts half, since it's unknown whether that wick came before or after the entry.</li>
       <li>What's left is grouped in 0.1% steps and smoothed. The cluster shown is the closest peak within 15% that reaches your threshold (30% of the strongest peak on that side by default).</li>
       <li>Real liquidations come from Bybit's and Binance's liquidation streams. Binance sends at most one per coin per second, so its totals run low.</li>
       <li>"Crowded" tags appear when funding and the Bybit long/short account ratio both lean hard one way.</li>
-      <li>These are estimates, so read each level as a zone of about ±0.5%. OKX doesn't allow browser access to its data, so it isn't included.</li>
+      <li>These are estimates, so read each level as a zone of about ±0.5%.</li>
     </ul>
   </details>
 </div>
@@ -541,6 +541,8 @@ const settings = {
   sig: Number(store.get('sig', 0.3)),
   sort: store.get('sort', 'list'),
   binance: store.get('binance', true) !== false,
+  okx: store.get('okx', true) !== false,
+  mexc: store.get('mexc', true) !== false,
   alerts: store.get('alerts', true) !== false,
   alertPct: Number(store.get('alertPct', 0.5)),
   sound: store.get('sound', true) !== false,
@@ -635,6 +637,7 @@ async function loadSymbol(st) {
   await loadOI(st, st.candles[0].t);
   pruneOI(st);
   st.status = 'ready'; st.err = ''; st.dirty = true; st.paint = true;
+  applyExtra(st);
   subscribe([sym]);
   loadRatio(st).catch(() => {});
   if (settings.binance) loadBinance(st).catch(() => { st.binStatus = 'none'; });
@@ -802,13 +805,55 @@ function liqSum(st, ms, side, from, to) {
   return s;
 }
 
+// ---------- OKX + MEXC open interest (collected by a GitHub Action, see scripts/collect-oi.mjs) ----------
+const EXTRA_URL = 'https://raw.githubusercontent.com/alicetin1905-ux/LODESTONE/data/oi.json';
+let extra = null, extraFailed = false;
+async function loadExtra() {
+  try {
+    const r = await fetch(EXTRA_URL + '?t=' + Math.floor(Date.now() / 300000), { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    if (!j || j.v !== 1 || !j.okx || !j.mexc) throw new Error('unknown format');
+    extra = j; extraFailed = false;
+    for (const st of S.values()) applyExtra(st);
+  } catch (e) { extraFailed = !extra; /* the page works without it: Bybit (+ Binance) only */ }
+  paintModel();
+}
+// one exchange's series on the 15-minute grid, rescaled to Bybit's units from the price ratio (e.g. PEPE -> 1000PEPE)
+function extraMap(st, s) {
+  if (!s || !(s.px > 0) || !(st.price > 0)) return null;
+  const scale = Math.pow(10, Math.round(Math.log10(st.price / s.px)));
+  const m = new Map();
+  s.v.forEach((v, i) => { if (v != null) m.set(s.t0 + i * STEP, v / scale); });
+  return m.size ? m : null;
+}
+function applyExtra(st) {
+  if (!extra || !(st.price > 0)) return;
+  const b = base(st.sym), o = extra.okx[b], x = extra.mexc[b];
+  const key = (o ? o.t0 + ':' + o.v.length : '') + '|' + (x ? x.t0 + ':' + x.v.length : '') + '|' + extra.at;
+  if (key === st.extraKey) return;
+  st.extraKey = key;
+  st.okx = extraMap(st, o);
+  st.mexc = extraMap(st, x);
+  st.dirty = true; st.listKey = '';
+}
+function oiVenues(st) {
+  const v = [st.oi];
+  if (settings.binance && st.binStatus === 'ok' && st.bin && st.bin.size) v.push(st.bin);
+  if (settings.okx && st.okx) v.push(st.okx);
+  if (settings.mexc && st.mexc) v.push(st.mexc);
+  return v;
+}
+function venueNames() {
+  return ['Bybit'].concat(settings.binance ? ['Binance'] : [], settings.okx ? ['OKX'] : [], settings.mexc ? ['MEXC'] : []);
+}
+
 // ---------- model ----------
 function compute(st) {
   const n = LOOKBACK[settings.lookback];
   const cs = st.candles.length > n ? st.candles.slice(-n) : st.candles;
   if (cs.length < 20 || !(st.price > 0)) return;
-  const venues = [st.oi];
-  if (settings.binance && st.binStatus === 'ok' && st.bin && st.bin.size) venues.push(st.bin);
+  const venues = oiVenues(st);
   const p = Object.assign({}, LIQ_DEFAULTS, { tiers: MIXES[settings.mix].tiers, sigFrac: settings.sig, mmr: st.mmr, maxLev: st.maxLev, price: st.price });
   const r = liqMap(cs, venues, p);
   const now = Date.now();
@@ -1468,7 +1513,15 @@ function paintDetail(st) {
     paintPosn(st);
   }
   const n = Math.min(st.candles.length, LOOKBACK[settings.lookback]);
-  const venues = 'Bybit' + (settings.binance ? (st.binStatus === 'ok' ? ' + Binance' : st.binStatus === 'loading' ? ' (Binance loading)' : ' (not on Binance)') : '');
+  const inc = ['Bybit'], miss = [];
+  if (settings.binance) { if (st.binStatus === 'ok') inc.push('Binance'); else miss.push(st.binStatus === 'loading' ? 'Binance loading' : 'not on Binance'); }
+  if (settings.okx) { if (st.okx) inc.push('OKX'); else miss.push(extra ? 'not on OKX' : extraFailed ? 'OKX unavailable' : 'OKX loading'); }
+  if (settings.mexc) {
+    if (st.mexc) inc.push('MEXC (' + (st.mexc.size * 15 / 1440).toFixed(1) + ' days collected)');
+    else miss.push(extra ? 'no MEXC data yet' : extraFailed ? 'MEXC unavailable' : 'MEXC loading');
+  }
+  const age = extra && (settings.okx || settings.mexc) ? ' · OKX/MEXC data ' + ago(extra.at) + ' old' : '';
+  const venues = inc.join(' + ') + (miss.length ? ' (' + miss.join(', ') + ')' : '') + age;
   st.el.facts.textContent = 'Open interest: ' + venues + ' · Bybit OI ' + fusd(st.oiVal) + ' · max leverage ' + st.maxLev + 'x · maintenance margin ' +
     (st.mmr * 100).toFixed(2) + '% · ' + n + ' candles (' + (n * 15 / 1440).toFixed(1) + ' days) · map updated ' + hhmmss(st.calcAt);
 }
@@ -1586,7 +1639,7 @@ function setLive() {
 }
 
 function paintModel() {
-  $('#model').textContent = MIXES[settings.mix].label + ' · ' + settings.lookback + '-day lookback · ' + (settings.binance ? 'Bybit + Binance OI' : 'Bybit OI') +
+  $('#model').textContent = MIXES[settings.mix].label + ' · ' + settings.lookback + '-day lookback · ' + venueNames().join(' + ') + ' OI' +
     ' · cluster ≥ ' + Math.round(settings.sig * 100) + '% of the biggest peak · alerts ' + (settings.alerts ? 'on at ' + settings.alertPct + '%' : 'off');
 }
 
@@ -1783,6 +1836,8 @@ function fillForm() {
   $('#lbIn').value = settings.lookback;
   $('#sigIn').value = String(settings.sig);
   $('#binIn').checked = settings.binance;
+  $('#okxIn').checked = settings.okx;
+  $('#mexcIn').checked = settings.mexc;
   $('#alertIn').checked = settings.alerts;
   $('#alertPctIn').value = String(settings.alertPct);
   $('#soundIn').checked = settings.sound;
@@ -1815,17 +1870,21 @@ function applyCoins() {
 function applySettings() {
   const coins = sanitizeCoins($('#coinsIn').value);
   const mix = $('#mixIn').value, lb = $('#lbIn').value, sig = Number($('#sigIn').value), bin = $('#binIn').checked;
-  const modelChanged = mix !== settings.mix || lb !== settings.lookback || sig !== settings.sig || bin !== settings.binance;
+  const okx = $('#okxIn').checked, mexc = $('#mexcIn').checked;
+  const modelChanged = mix !== settings.mix || lb !== settings.lookback || sig !== settings.sig || bin !== settings.binance ||
+    okx !== settings.okx || mexc !== settings.mexc;
   settings.mix = MIXES[mix] ? mix : 'retail';
   settings.lookback = LOOKBACK[lb] ? lb : '10';
   settings.sig = SIGS.indexOf(sig) >= 0 ? sig : 0.3;
   settings.binance = bin;
+  settings.okx = okx;
+  settings.mexc = mexc;
   settings.alerts = $('#alertIn').checked;
   const ap = Number($('#alertPctIn').value);
   settings.alertPct = ALERT_PCTS.indexOf(ap) >= 0 ? ap : 0.5;
   settings.sound = $('#soundIn').checked;
   settings.awake = $('#awakeIn').checked;
-  for (const k of ['mix', 'lookback', 'sig', 'binance', 'alerts', 'alertPct', 'sound', 'awake']) store.set(k, settings[k]);
+  for (const k of ['mix', 'lookback', 'sig', 'binance', 'okx', 'mexc', 'alerts', 'alertPct', 'sound', 'awake']) store.set(k, settings[k]);
   applyWake();
   if (settings.alerts && settings.sound) unlockAudio();      // the Apply tap counts as the gesture iOS needs
   if (coins.length && coins.join() !== settings.coins.join()) { settings.coins = coins; store.set('coins', coins); applyCoins(); }
@@ -1859,7 +1918,7 @@ function bindUI() {
   $('#resetBtn').addEventListener('click', () => {
     $('#coinsIn').value = DEFAULT_COINS.join(', ');
     $('#mixIn').value = 'retail'; $('#lbIn').value = '10'; $('#sigIn').value = '0.3';
-    $('#binIn').checked = true; $('#alertIn').checked = true; $('#alertPctIn').value = '0.5'; $('#soundIn').checked = true;
+    $('#binIn').checked = true; $('#okxIn').checked = true; $('#mexcIn').checked = true; $('#alertIn').checked = true; $('#alertPctIn').value = '0.5'; $('#soundIn').checked = true;
     $('#awakeIn').checked = false;
   });
   $('#testBtn').addEventListener('click', () => {
@@ -1908,6 +1967,8 @@ function boot() {
   connectWS();
   connectBinWS();
   loadQueue(order.slice());
+  loadExtra();
+  setInterval(loadExtra, 5 * 60000);
   setInterval(tick, 400);
   setInterval(oiLoop, 15000);
   setInterval(ratioLoop, 30000);
@@ -2009,11 +2070,7 @@ function runJob(job) {
   job.id = ++jobSeq;
   return new Promise((res, rej) => { jobs.set(job.id, { res: res, rej: rej }); w.postMessage(job); });
 }
-function venuesOf(st) {
-  const v = [Array.from(st.oi.entries())];
-  if (settings.binance && st.binStatus === 'ok' && st.bin) v.push(Array.from(st.bin.entries()));
-  return v;
-}
+function venuesOf(st) { return oiVenues(st).map((m) => Array.from(m.entries())); }
 function modelParams(st) { return { tiers: MIXES[settings.mix].tiers, sigFrac: settings.sig, mmr: st.mmr, maxLev: st.maxLev }; }
 
 // ---------- 1. backtest ----------
@@ -2184,8 +2241,7 @@ async function buildHorizons(st) {
   paintHorizons(st);
   const out = {};
   try {
-    const venues = [st.oi];
-    if (settings.binance && st.binStatus === 'ok' && st.bin && st.bin.size) venues.push(st.bin);
+    const venues = oiVenues(st);
     const short = liqMap(st.candles.slice(-96), venues, Object.assign({}, LIQ_DEFAULTS, { tiers: [[25, 0.3], [50, 0.4], [100, 0.3]], sigFrac: settings.sig, mmr: st.mmr, maxLev: st.maxLev, price: st.price }));
     out.short = short;
     if (!st.h1 || Date.now() - st.h1.at > 30 * 60000) {
