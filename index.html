@@ -290,7 +290,7 @@ a.btn{color:var(--fg);text-decoration:none;display:inline-block}
   <details class="how">
     <summary>How the levels are estimated</summary>
     <ul>
-      <li>Data comes from public exchange APIs: Bybit's 15-minute candles and open-interest history, plus Binance's open-interest history for the same coin when it lists it. OKX and MEXC don't let browsers read their open interest, so a GitHub Action collects it every 5 minutes and the page loads that file: OKX with its full 15-minute history, MEXC from snapshots (it has no history), so MEXC builds up from the day collection started. Prices, liquidations and funding stream live.</li>
+      <li>Data comes from public exchange APIs: Bybit's 15-minute candles and open-interest history, plus Binance's open-interest history for the same coin when it lists it. OKX and MEXC don't let browsers read their open interest, so a GitHub Action collects it and the page loads that file: OKX with its full 15-minute history (topped up with OKX's live open interest every 15 minutes while the page is open), MEXC from snapshots (it has no history), so MEXC builds up from the day collection started. Prices, liquidations and funding stream live.</li>
       <li>Each 15-minute candle where open interest rose counts as new positions opened at that candle's average price. A green candle leans the new positions long, a red one leans them short.</li>
       <li>New positions are spread across the leverage mix you pick (leverage above the coin's max is folded into the max), and get Bybit's isolated liquidation price: longs at entry × (1 − 1/leverage + maintenance margin), shorts at entry × (1 + 1/leverage − maintenance margin).</li>
       <li>When an exchange's open interest falls, its open positions shrink by the same share. Any level that price has already traded through is removed. A level the opening candle itself already reached counts half, since it's unknown whether that wick came before or after the entry.</li>
@@ -828,14 +828,48 @@ function extraMap(st, s) {
   return m.size ? m : null;
 }
 function applyExtra(st) {
-  if (!extra || !(st.price > 0)) return;
-  const b = base(st.sym), o = extra.okx[b], x = extra.mexc[b];
-  const key = (o ? o.t0 + ':' + o.v.length : '') + '|' + (x ? x.t0 + ':' + x.v.length : '') + '|' + extra.at;
+  if (!(st.price > 0)) return;
+  const b = base(st.sym), o = extra && extra.okx[b], x = extra && extra.mexc[b], L = okxLive.get(b);
+  const key = (o ? o.t0 + ':' + o.v.length : '') + '|' + (x ? x.t0 + ':' + x.v.length : '') + '|' + (extra ? extra.at : 0) + '|' + (L ? L.at : 0);
   if (key === st.extraKey) return;
   st.extraKey = key;
-  st.okx = extraMap(st, o);
+  // OKX: the collected history, with the page's own live snapshots filling in where the file has no point yet
+  let okx = extraMap(st, o);
+  if (L && L.px > 0) {
+    const scale = Math.pow(10, Math.round(Math.log10(st.price / L.px)));
+    for (const [t, v] of L.m) { if (!okx) okx = new Map(); if (!okx.has(t)) okx.set(t, v / scale); }
+  }
+  st.okx = okx;
   st.mexc = extraMap(st, x);
   st.dirty = true; st.listKey = '';
+}
+// OKX's current open interest is readable from the browser (its history is not), so while the page is open it
+// takes one snapshot per 15-minute boundary for all coins in one request; this keeps OKX live when the
+// collector runs late. Only a snapshot taken within 90 s of the boundary is used.
+const OKX = 'https://www.okx.com';
+const okxLive = new Map();     // base -> { px, at, m: Map(boundary -> open interest in OKX's coin units) }
+let okxLiveB = 0;
+async function pollOkxLive() {
+  const b = Math.floor(Date.now() / STEP) * STEP;
+  if (!settings.okx || document.hidden || b === okxLiveB || Date.now() - b > 90000) return;
+  okxLiveB = b;
+  try {
+    const r = await fetch(OKX + '/api/v5/public/open-interest?instType=SWAP', { cache: 'no-store' });
+    const j = await r.json();
+    if (!j || j.code !== '0' || !Array.isArray(j.data)) return;
+    const rows = new Map(j.data.map((x) => [x.instId, x]));
+    for (const st of S.values()) {
+      const bs = base(st.sym);
+      const x = [bs, bs.replace(/^1000+/, '')].map((c) => rows.get(c + '-USDT-SWAP')).find(Boolean);
+      if (!x || !(+x.oiCcy > 0) || !(+x.oiUsd > 0)) continue;
+      let L = okxLive.get(bs);
+      if (!L) okxLive.set(bs, (L = { px: 0, at: 0, m: new Map() }));
+      L.px = +x.oiUsd / +x.oiCcy; L.at = b;
+      L.m.set(b, +x.oiCcy);
+      for (const t of L.m.keys()) if (t < b - MAX_KEEP * STEP) L.m.delete(t);
+      applyExtra(st);
+    }
+  } catch (e) { /* next boundary */ }
 }
 function oiVenues(st) {
   const v = [st.oi];
@@ -1969,6 +2003,7 @@ function boot() {
   loadQueue(order.slice());
   loadExtra();
   setInterval(loadExtra, 5 * 60000);
+  setInterval(pollOkxLive, 15000);
   setInterval(tick, 400);
   setInterval(oiLoop, 15000);
   setInterval(ratioLoop, 30000);
