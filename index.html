@@ -295,7 +295,7 @@ a.btn{color:var(--fg);text-decoration:none;display:inline-block}
       <li>New positions are spread across the leverage mix you pick (leverage above the coin's max is folded into the max), and get Bybit's isolated liquidation price: longs at entry × (1 − 1/leverage + maintenance margin), shorts at entry × (1 + 1/leverage − maintenance margin).</li>
       <li>When an exchange's open interest falls, its open positions shrink by the same share. Any level that price has already traded through is removed. A level the opening candle itself already reached counts half, since it's unknown whether that wick came before or after the entry.</li>
       <li>What's left is grouped in 0.1% steps and smoothed. The cluster shown is the closest peak within 15% that reaches your threshold (30% of the strongest peak on that side by default).</li>
-      <li>Real liquidations come from Bybit's and Binance's liquidation streams. Binance sends at most one per coin per second, so its totals run low.</li>
+      <li>Real liquidations come from Bybit's, Binance's and OKX's liquidation streams (OKX's while its open interest is switched on, valued at the bankruptcy price). Binance sends at most one per coin per second, so its totals run low.</li>
       <li>"Crowded" tags appear when funding and the Bybit long/short account ratio both lean hard one way.</li>
       <li>These are estimates, so read each level as a zone of about ±0.5%. An exchange is left out for a coin when its price doesn't match Bybit's (more than 15% apart after 1000-unit scaling): the same ticker is then a different token there.</li>
     </ul>
@@ -1823,6 +1823,64 @@ function connectBinWS() {
   sock.onerror = () => { try { sock.close(); } catch (e) { /* ignore */ } };
 }
 
+// OKX liquidation stream (all USDT swaps). Port 443, which works on networks that block OKX's usual 8443.
+// Sizes are in contracts: value = size x contract value x bankruptcy price, from OKX's instrument list.
+const OKX_WS = 'wss://ws.okx.com/ws/v5/public';
+let ows = null, owsTimer = 0, owsBackoff = 2000, owsPing = 0;
+const okxCt = new Map();       // instId -> contract value in coins
+const okxSeen = new Set();     // OKX can resend the latest print after a reconnect
+async function loadOkxCt() {
+  try {
+    const r = await fetch(OKX + '/api/v5/public/instruments?instType=SWAP', { cache: 'no-store' });
+    const j = await r.json();
+    if (j && j.code === '0') for (const x of j.data) okxCt.set(x.instId, +x.ctVal);
+  } catch (e) { /* retried on the next connect */ }
+}
+function okxState(instId) {
+  const m = /^(.+)-USDT-SWAP$/.exec(instId);
+  return m ? S.get(m[1] + 'USDT') || S.get('1000' + m[1] + 'USDT') || null : null;
+}
+function stopOkxWS() {
+  clearTimeout(owsTimer); clearInterval(owsPing);
+  if (ows) { try { ows.onclose = null; ows.close(); } catch (e) { /* ignore */ } ows = null; }
+}
+function connectOkxWS() {
+  stopOkxWS();
+  if (!settings.okx) return;
+  if (!okxCt.size) loadOkxCt();
+  let sock;
+  try { sock = new WebSocket(OKX_WS); } catch (e) { owsTimer = setTimeout(connectOkxWS, owsBackoff); return; }
+  ows = sock;
+  sock.onopen = () => {
+    owsBackoff = 2000;
+    sock.send(JSON.stringify({ op: 'subscribe', args: [{ channel: 'liquidation-orders', instType: 'SWAP' }] }));
+    owsPing = setInterval(() => { if (sock.readyState === 1) sock.send('ping'); }, 20000);   // OKX closes idle sockets after 30 s
+  };
+  sock.onmessage = (ev) => {
+    if (ev.data === 'pong') return;
+    let m;
+    try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (!m || !Array.isArray(m.data)) return;
+    for (const d of m.data) {
+      const st = okxState(d.instId), ct = okxCt.get(d.instId);
+      if (!st || st.status !== 'ready' || !(ct > 0)) continue;
+      for (const x of d.details || []) {
+        const px = +x.bkPx, t = +x.ts, key = d.instId + ':' + x.ts + ':' + x.sz;
+        if (okxSeen.has(key) || !(px > 0) || Date.now() - t > LIQ_KEEP) continue;
+        okxSeen.add(key);
+        const scale = unitScale(st, px);
+        if (!scale) continue;                       // another token under the same ticker
+        // OKX: posSide long (or a sell in net mode) = a long position was liquidated
+        const isLong = x.posSide === 'long' || (x.posSide !== 'short' && x.side === 'sell');
+        addLiq(st, isLong ? 'L' : 'S', +x.sz * ct * px, px * scale, t, 'OKX');
+      }
+    }
+    if (okxSeen.size > 5000) okxSeen.clear();
+  };
+  sock.onclose = () => { clearInterval(owsPing); if (ows !== sock) return; ows = null; owsTimer = setTimeout(connectOkxWS, owsBackoff); owsBackoff = Math.min(60000, owsBackoff * 2); };
+  sock.onerror = () => { try { sock.close(); } catch (e) { /* ignore */ } };
+}
+
 // ---------- loops ----------
 async function loadQueue(syms) {
   let i = 0;
@@ -1924,6 +1982,7 @@ function onVisibility() {
   hiddenAt = 0;
   if (!ws || ws.readyState > 1) connectWS();
   if (!bws || bws.readyState > 1) connectBinWS();
+  if (settings.okx && (!ows || ows.readyState > 1)) connectOkxWS();
   if (away > 60000) for (const st of S.values()) if (st.status === 'ready') { st.needResync = true; st.resyncAt = 0; }
   for (const st of S.values()) { st.paint = true; st.tagKey = ''; }
   paintSoundBtn();
@@ -1980,6 +2039,7 @@ function applySettings() {
   settings.lookback = LOOKBACK[lb] ? lb : '10';
   settings.sig = SIGS.indexOf(sig) >= 0 ? sig : 0.3;
   settings.binance = bin;
+  if (okx !== settings.okx) { if (okx) setTimeout(connectOkxWS, 0); else stopOkxWS(); }
   settings.okx = okx;
   settings.gate = gate;
   settings.kraken = kraken;
@@ -2072,6 +2132,7 @@ function boot() {
   $('#clock').textContent = hhmmss(Date.now());
   connectWS();
   connectBinWS();
+  connectOkxWS();
   loadQueue(order.slice());
   loadExtra();
   setInterval(loadExtra, 5 * 60000);
@@ -2343,6 +2404,49 @@ function heatImage(hm) {
 }
 
 // ---------- 6. short-term vs long-term pools (open coin) ----------
+// other exchanges' hourly open interest for the 30-day map, in Bybit's units: Binance and Gate directly (both keep
+// 30 days of it), OKX / Kraken / MEXC from their 15-minute series (about 11 days), taking the values on the hour
+async function hourVenues(st, first) {
+  const maps = [], names = { full: ['Bybit'], part: [] };
+  const getJ = async (url) => { const r = await fetch(url, { cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
+  if (settings.binance && st.binStatus === 'ok') {
+    try {
+      const m = new Map();
+      let end = 0;
+      for (let p = 0; p < 2; p++) {
+        const rows = await getJ(BIN + '/futures/data/openInterestHist?symbol=' + st.sym + '&period=1h&limit=500' + (end ? '&endTime=' + end : ''));
+        if (!Array.isArray(rows) || !rows.length) break;
+        for (const x of rows) if (+x.sumOpenInterest > 0) m.set(+x.timestamp, +x.sumOpenInterest / (st.binScale || 1));
+        const mn = Math.min.apply(null, rows.map((x) => +x.timestamp));
+        if (mn <= first) break;
+        end = mn - 1;
+      }
+      if (m.size) { maps.push(m); names.full.push('Binance'); }
+    } catch (e) { /* the map works without it */ }
+  }
+  if (settings.gate && st.gateStatus === 'ok' && st.gateScale > 0) {
+    try {
+      const m = new Map();
+      let from = first - 3600000;
+      for (let p = 0; p < 9; p++) {
+        const rows = await getJ(GATE + '/contract_stats?contract=' + st.gateC + '&interval=1h&limit=100&from=' + Math.floor(from / 1000));
+        if (!Array.isArray(rows) || !rows.length) break;
+        for (const x of rows) if (x.mark_price > 0 && x.open_interest_usd > 0) m.set(x.time * 1000, x.open_interest_usd / x.mark_price / st.gateScale);
+        if (rows.length < 100) break;
+        from = Math.max.apply(null, rows.map((x) => x.time)) * 1000 + 3600000;
+        await sleep(60);
+      }
+      if (m.size) { maps.push(m); names.full.push('Gate'); }
+    } catch (e) { /* the map works without it */ }
+  }
+  for (const [on, src, nm] of [[settings.okx, st.okx, 'OKX'], [settings.kraken, st.kraken, 'Kraken'], [settings.mexc, st.mexc, 'MEXC']]) {
+    if (!on || !src) continue;
+    const m = new Map();
+    for (const [t, v] of src) if (t % 3600000 === 0) m.set(t, v);
+    if (m.size > 1) { maps.push(m); names.part.push(nm); }
+  }
+  return { maps: maps, names: names };
+}
 async function buildHorizons(st) {
   st.hz = { busy: true };
   paintHorizons(st);
@@ -2363,9 +2467,11 @@ async function buildHorizons(st) {
         cursor = r.nextPageCursor;
         if (!cursor || !list.length || Math.min.apply(null, list.map((x) => +x.timestamp)) <= candles[0].t) break;
       }
-      st.h1 = { candles: candles, oi: oi, at: Date.now() };
+      const more = await hourVenues(st, candles[0].t);
+      st.h1 = { candles: candles, oi: oi, more: more.maps, names: more.names, at: Date.now() };
     }
-    out.long = liqMap(st.h1.candles, st.h1.oi, Object.assign({}, LIQ_DEFAULTS, { stepMs: 3600000, tiers: [[3, 0.2], [5, 0.3], [10, 0.3], [20, 0.2]], sigFrac: settings.sig, mmr: st.mmr, maxLev: st.maxLev, price: st.price }));
+    out.longNames = st.h1.names;
+    out.long = liqMap(st.h1.candles, [st.h1.oi].concat(st.h1.more), Object.assign({}, LIQ_DEFAULTS, { stepMs: 3600000, tiers: [[3, 0.2], [5, 0.3], [10, 0.3], [20, 0.2]], sigFrac: settings.sig, mmr: st.mmr, maxLev: st.maxLev, price: st.price }));
   } catch (e) { out.err = e.message; }
   st.hz = out;
   paintHorizons(st);
@@ -2383,7 +2489,7 @@ function paintHorizons(st) {
   const rows = [
     ['Short-term · 1 day, 25–100x', hz.short],
     ['Standard · ' + settings.lookback + ' days, mixed', st.res],
-    ['Long-term · 30 days, 3–20x (Bybit)', hz.long]
+    ['Long-term · 30 days, 3–20x', hz.long]
   ];
   for (const r of rows) {
     const tr = document.createElement('tr');
@@ -2396,6 +2502,12 @@ function paintHorizons(st) {
   const wrap = document.createElement('div'); wrap.className = 'tablewrap'; wrap.appendChild(tbl);
   el.appendChild(wrap);
   if (hz.err) { const p = document.createElement('p'); p.className = 'note'; p.textContent = 'Long-term map unavailable: ' + hz.err; el.appendChild(p); }
+  else if (hz.longNames) {
+    const p = document.createElement('p'); p.className = 'note';
+    p.textContent = 'Long-term open interest: ' + hz.longNames.full.join(' + ') + ' (30 days)' +
+      (hz.longNames.part.length ? ', ' + hz.longNames.part.join(' + ') + ' (last ~11 days, what the collected history holds)' : '') + '.';
+    el.appendChild(p);
+  }
 }
 
 // ---------- 7. buying / selling pressure ----------
