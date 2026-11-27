@@ -1,10 +1,11 @@
-// Collects open interest from OKX and MEXC for the LODESTONE coin list.
-// Browsers can't read these themselves (no CORS on OKX's open-interest history, none at all on MEXC),
+// Collects open interest from OKX, Kraken Futures, Gate.io and MEXC for the LODESTONE coin list.
+// Browsers can't read most of these themselves (no CORS on OKX's open-interest history, Kraken or MEXC;
+// the page reads Gate directly, the file's Gate series is for the widget),
 // so a scheduled GitHub Action runs this and publishes data/oi.json on the `data` branch,
 // which the page and the widget read from raw.githubusercontent.com.
 //
 // usage: node scripts/collect-oi.mjs <index.html> <data dir>
-//  - OKX: 15-minute open-interest history (backfilled to ~11 days, then the newest page each run)
+//  - OKX, Kraken, Gate: 15-minute open-interest history (backfilled to ~11 days, then the newest page each run)
 //  - MEXC: has no history API, so every run stores a snapshot in mexc-raw.json; the published series
 //    is those snapshots interpolated onto the 15-minute boundaries
 // Values are in each exchange's own coin units with `px` (that exchange's price per unit); the page
@@ -48,7 +49,8 @@ function fromMap(mp) {
 }
 
 const prev = readJSON('oi.json', { okx: {}, mexc: {} });
-const out = { v: 1, at: now, step: STEP, coins: COINS, okx: {}, mexc: {}, errors: [] };
+const out = { v: 1, at: now, step: STEP, coins: COINS, okx: {}, kraken: {}, gate: {}, mexc: {}, errors: [] };
+prev.kraken = prev.kraken || {}; prev.gate = prev.gate || {};
 
 // ---------- OKX ----------
 const okxIds = new Set((await getJSON('https://www.okx.com/api/v5/public/instruments?instType=SWAP')).data.map((x) => x.instId));
@@ -78,6 +80,65 @@ for (const base of COINS) {
   } catch (e) {
     out.errors.push('OKX ' + base + ': ' + e.message);
     if (prev.okx[base]) out.okx[base] = prev.okx[base];
+  }
+}
+
+// ---------- Kraken Futures (PF_ perpetuals, open interest in coins; each 15m candle's open = OI at its start) ----------
+try {
+  const tk = (await getJSON('https://futures.kraken.com/derivatives/api/v3/tickers')).tickers || [];
+  const K = new Map(tk.map((x) => [x.symbol, x]));
+  for (const base of COINS) {
+    const sym = candidates(base).map((b) => 'PF_' + (b === 'BTC' ? 'XBT' : b) + 'USD').find((x) => K.has(x));
+    if (!sym) continue;
+    try {
+      const old = prev.kraken[base] && prev.kraken[base].sym === sym ? prev.kraken[base] : null;
+      const mp = toMap(old);
+      let since = Math.floor((mp.size ? Math.max(...mp.keys()) - 8 * STEP : lastB - KEEP * STEP) / 1000);
+      for (let p = 0; p < 12; p++) {
+        const j = await getJSON('https://futures.kraken.com/api/charts/v1/analytics/' + sym + '/open-interest?interval=900&since=' + since);
+        const ts = (j.result && j.result.timestamp) || [];
+        if (!ts.length) break;
+        ts.forEach((t, i) => mp.set(t * 1000, +j.result.data[i][0]));
+        await sleep(150);
+        if (!j.result.more) break;
+        since = ts[ts.length - 1] + 900;
+      }
+      const ser = fromMap(mp);
+      if (ser) out.kraken[base] = Object.assign({ sym, px: sig(+K.get(sym).markPrice) }, ser);
+    } catch (e) {
+      out.errors.push('Kraken ' + base + ': ' + e.message);
+      if (prev.kraken[base]) out.kraken[base] = prev.kraken[base];
+    }
+  }
+} catch (e) { out.errors.push('Kraken: ' + e.message); Object.assign(out.kraken, prev.kraken); }
+
+// ---------- Gate.io (open_interest_usd / mark_price = coins) ----------
+for (const base of COINS) {
+  try {
+    const old = prev.gate[base] || null;
+    let sym = old && old.sym, mp = toMap(old);
+    if (!sym) {
+      for (const c of candidates(base)) {
+        const r = await getJSON('https://api.gateio.ws/api/v4/futures/usdt/contract_stats?contract=' + c + '_USDT&interval=15m&limit=1');
+        if (Array.isArray(r) && r.length) { sym = c + '_USDT'; break; }
+      }
+      if (!sym) continue;
+      mp = new Map();
+    }
+    let from = Math.floor((mp.size ? Math.max(...mp.keys()) - 4 * STEP : lastB - KEEP * STEP) / 1000), px = 0;
+    for (let p = 0; p < 14; p++) {
+      const rows = await getJSON('https://api.gateio.ws/api/v4/futures/usdt/contract_stats?contract=' + sym + '&interval=15m&limit=100&from=' + from);
+      if (!Array.isArray(rows) || !rows.length) break;
+      for (const x of rows) if (x.mark_price > 0 && x.open_interest_usd > 0) { mp.set(x.time * 1000, x.open_interest_usd / x.mark_price); px = x.mark_price; }
+      await sleep(120);
+      if (rows.length < 100) break;
+      from = Math.max(...rows.map((x) => x.time)) + 900;
+    }
+    const ser = fromMap(mp);
+    if (ser) out.gate[base] = Object.assign({ sym, px: sig(px || (old && old.px)) }, ser);
+  } catch (e) {
+    out.errors.push('Gate ' + base + ': ' + e.message);
+    if (prev.gate[base]) out.gate[base] = prev.gate[base];
   }
 }
 
@@ -125,4 +186,4 @@ fs.mkdirSync(dir, { recursive: true });
 fs.writeFileSync(path.join(dir, 'oi.json'), JSON.stringify(out));
 fs.writeFileSync(path.join(dir, 'mexc-raw.json'), JSON.stringify(raw));
 const n = (o) => Object.keys(o).length;
-console.log(`OKX ${n(out.okx)} coins, MEXC ${n(out.mexc)} coins, ${out.errors.length} errors${out.errors.length ? ': ' + out.errors.join('; ') : ''}`);
+console.log(`OKX ${n(out.okx)}, Kraken ${n(out.kraken)}, Gate ${n(out.gate)}, MEXC ${n(out.mexc)} coins, ${out.errors.length} errors${out.errors.length ? ': ' + out.errors.join('; ') : ''}`);

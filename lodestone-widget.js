@@ -165,8 +165,8 @@ const LIQ_DEFAULTS = {
 
 // ---------------------------------------------------------------------------
 // LODESTONE widget: the 3 coins whose nearest liquidation pool is closest to price.
-// Same model and defaults as the LODESTONE page: Bybit + Binance + OKX + MEXC open interest
-// (OKX and MEXC from the file the page's GitHub Action publishes),
+// Same model and defaults as the LODESTONE page: Bybit + Binance + OKX + Gate + Kraken + MEXC open interest
+// (OKX, Gate, Kraken and MEXC from the file the page's GitHub Action publishes),
 // 10-day lookback, retail 5-100x leverage mix, cluster = peak >= 30% of the biggest.
 // Widget parameter (long-press the widget > Edit Widget > Parameter): an optional
 // coin list such as "BTC, ETH, SOL". Leave it empty for the full LODESTONE list.
@@ -284,9 +284,11 @@ async function updateCoin(cache, base) {
 }
 
 // OKX / MEXC series on the 15-minute grid, rescaled to Bybit's units from the price ratio (as on the page)
+// (left out when the prices differ by more than 15% after that: a different token under the same ticker)
 function extraMap(s, price) {
   if (!s || !(s.px > 0) || !(price > 0)) return null;
   const scale = Math.pow(10, Math.round(Math.log10(price / s.px)));
+  if (Math.abs(s.px * scale / price - 1) > 0.15) return null;
   const m = new Map();
   s.v.forEach((v, i) => { if (v != null) m.set(s.t0 + i * STEP, v / scale); });
   return m.size ? m : null;
@@ -297,7 +299,7 @@ function computeCoin(c, base, extra) {
   const price = candles[candles.length - 1].c;
   const venues = [new Map(c.oi)];
   if (c.bin.length) venues.push(new Map(c.bin));
-  if (extra) for (const k of ['okx', 'mexc']) { const m = extraMap(extra[k][base], price); if (m) venues.push(m); }
+  if (extra) for (const k of ['okx', 'gate', 'kraken', 'mexc']) { const m = extra[k] && extraMap(extra[k][base], price); if (m) venues.push(m); }
   const r = liqMap(candles, venues, Object.assign({}, LIQ_DEFAULTS, { tiers: RETAIL, sigFrac: 0.3, mmr: c.info.mmr, maxLev: c.info.maxLev, price: price }));
   const pick = (x) => (x ? { px: x.px, size: x.size } : null);
   return { price: price, dec: c.info.dec, up: pick(r.up.nearest), dn: pick(r.down.nearest) };
