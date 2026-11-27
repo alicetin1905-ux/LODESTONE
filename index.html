@@ -232,7 +232,7 @@ a.btn{color:var(--fg);text-decoration:none;display:inline-block}
     <div class="field"><label for="mixIn">Leverage mix</label><select id="mixIn"><option value="retail">Retail mix: 5–100x</option><option value="even">Even split: 10/25/50/100x</option></select></div>
     <div class="field"><label for="lbIn">Lookback</label><select id="lbIn"><option value="3">3 days</option><option value="7">7 days</option><option value="10">10 days</option></select></div>
     <div class="field"><label for="sigIn">Cluster threshold</label><select id="sigIn"><option value="0.2">20% of strongest</option><option value="0.3">30% of strongest</option><option value="0.4">40% of strongest</option></select></div>
-    <div class="field"><label>Exchanges</label><label class="check"><input type="checkbox" id="binIn"> Add Binance open interest</label><label class="check"><input type="checkbox" id="okxIn"> Add OKX open interest</label><label class="check"><input type="checkbox" id="mexcIn"> Add MEXC open interest</label></div>
+    <div class="field"><label>Exchanges</label><label class="check"><input type="checkbox" id="binIn"> Add Binance open interest</label><label class="check"><input type="checkbox" id="okxIn"> Add OKX open interest</label><label class="check"><input type="checkbox" id="gateIn"> Add Gate.io open interest</label><label class="check"><input type="checkbox" id="krakenIn"> Add Kraken open interest</label><label class="check"><input type="checkbox" id="mexcIn"> Add MEXC open interest</label></div>
     <h2>Alerts</h2>
     <div class="field"><label>Alerts</label><label class="check"><input type="checkbox" id="alertIn"> Alert on near pools and sweeps</label></div>
     <div class="field"><label for="alertPctIn">Alert when price is within</label><select id="alertPctIn"><option value="0.3">0.3% of a pool</option><option value="0.5">0.5% of a pool</option><option value="1">1% of a pool</option></select></div>
@@ -290,14 +290,14 @@ a.btn{color:var(--fg);text-decoration:none;display:inline-block}
   <details class="how">
     <summary>How the levels are estimated</summary>
     <ul>
-      <li>Data comes from public exchange APIs: Bybit's 15-minute candles and open-interest history, plus Binance's open-interest history for the same coin when it lists it. OKX and MEXC don't let browsers read their open interest, so a GitHub Action collects it and the page loads that file: OKX with its full 15-minute history (topped up with OKX's live open interest every 15 minutes while the page is open), MEXC from snapshots (it has no history), so MEXC builds up from the day collection started. Prices, liquidations and funding stream live.</li>
+      <li>Data comes from public exchange APIs: Bybit's 15-minute candles and open-interest history, plus Binance's and Gate.io's open-interest history for the same coin when they list it. OKX, Kraken and MEXC don't let browsers read their open interest, so a GitHub Action collects it and the page loads that file: Kraken with its 15-minute history, OKX with its full 15-minute history (topped up with OKX's live open interest every 15 minutes while the page is open), MEXC from snapshots (it has no history), so MEXC builds up from the day collection started. Prices, liquidations and funding stream live.</li>
       <li>Each 15-minute candle where open interest rose counts as new positions opened at that candle's average price. A green candle leans the new positions long, a red one leans them short.</li>
       <li>New positions are spread across the leverage mix you pick (leverage above the coin's max is folded into the max), and get Bybit's isolated liquidation price: longs at entry × (1 − 1/leverage + maintenance margin), shorts at entry × (1 + 1/leverage − maintenance margin).</li>
       <li>When an exchange's open interest falls, its open positions shrink by the same share. Any level that price has already traded through is removed. A level the opening candle itself already reached counts half, since it's unknown whether that wick came before or after the entry.</li>
       <li>What's left is grouped in 0.1% steps and smoothed. The cluster shown is the closest peak within 15% that reaches your threshold (30% of the strongest peak on that side by default).</li>
       <li>Real liquidations come from Bybit's and Binance's liquidation streams. Binance sends at most one per coin per second, so its totals run low.</li>
       <li>"Crowded" tags appear when funding and the Bybit long/short account ratio both lean hard one way.</li>
-      <li>These are estimates, so read each level as a zone of about ±0.5%.</li>
+      <li>These are estimates, so read each level as a zone of about ±0.5%. An exchange is left out for a coin when its price doesn't match Bybit's (more than 15% apart after 1000-unit scaling): the same ticker is then a different token there.</li>
     </ul>
   </details>
 </div>
@@ -542,6 +542,8 @@ const settings = {
   sort: store.get('sort', 'list'),
   binance: store.get('binance', true) !== false,
   okx: store.get('okx', true) !== false,
+  gate: store.get('gate', true) !== false,
+  kraken: store.get('kraken', true) !== false,
   mexc: store.get('mexc', true) !== false,
   alerts: store.get('alerts', true) !== false,
   alertPct: Number(store.get('alertPct', 0.5)),
@@ -581,7 +583,7 @@ let detailChart = null;          // { sym, chart, series, lines: [], key }
 function newState(sym) {
   return {
     sym: sym, status: 'loading', err: '', errAt: 0, retryable: false,
-    candles: [], oi: new Map(), lastOiT: 0, bin: null, binStatus: 'pending', binLastT: 0, binScale: 1,
+    candles: [], oi: new Map(), lastOiT: 0, bin: null, binStatus: 'pending', binLastT: 0, binScale: 1, gate: null, gateStatus: 'pending', gateScale: 0, gateC: null,
     maxLev: 50, mmr: 0.01, dec: 4, tick: 0.0001,
     price: 0, chg24: null, oiVal: 0, funding: null, ratio: null,
     res: null, dirty: false, paint: true, calcAt: 0, busy: false, needResync: false, resyncAt: 0,
@@ -641,6 +643,7 @@ async function loadSymbol(st) {
   subscribe([sym]);
   loadRatio(st).catch(() => {});
   if (settings.binance) loadBinance(st).catch(() => { st.binStatus = 'none'; });
+  if (settings.gate) loadGate(st).catch(() => { st.gateStatus = 'none'; });
 }
 
 async function loadOI(st, fromT) {
@@ -665,6 +668,7 @@ function pruneOI(st) {
   const cut = st.candles[0].t - STEP;
   for (const t of st.oi.keys()) if (t < cut) st.oi.delete(t);
   if (st.bin) for (const t of st.bin.keys()) if (t < cut) st.bin.delete(t);
+  if (st.gate) for (const t of st.gate.keys()) if (t < cut) st.gate.delete(t);
 }
 
 async function refreshOI(st) {
@@ -711,6 +715,53 @@ async function loadBinance(st) {
   st.binStatus = st.bin.size ? 'ok' : 'none';
   st.dirty = true; st.listKey = '';
 }
+// Gate.io open-interest history (its API allows browsers): coins = open_interest_usd / mark_price, in Bybit's units
+const GATE = 'https://api.gateio.ws/api/v4/futures/usdt';
+async function gateFetch(c, from, limit) {
+  const r = await fetch(GATE + '/contract_stats?contract=' + c + '&interval=15m&limit=' + limit + (from ? '&from=' + Math.floor(from / 1000) : ''), { cache: 'no-store' });
+  if (!r.ok) throw new Error('Gate ' + r.status);
+  const j = await r.json();
+  if (!Array.isArray(j)) throw new Error('Gate: no data');
+  return j;
+}
+function gateAdd(st, rows) {
+  for (const x of rows) {
+    if (!(x.mark_price > 0) || !(x.open_interest_usd > 0)) continue;
+    if (!st.gateScale) st.gateScale = unitScale(st, x.mark_price) || -1;
+    if (st.gateScale < 0) return;
+    st.gate.set(x.time * 1000, x.open_interest_usd / x.mark_price / st.gateScale);
+  }
+}
+async function loadGate(st) {
+  st.gate = new Map(); st.gateStatus = 'loading'; st.gateScale = 0;
+  const b = base(st.sym), first = st.candles[0].t, last = st.candles[st.candles.length - 1].t;
+  st.gateC = null;
+  for (const c of [b, b.replace(/^1000+/, '')]) {
+    try { if ((await gateFetch(c + '_USDT', 0, 1)).length) { st.gateC = c + '_USDT'; break; } } catch (e) { /* not listed under this name */ }
+  }
+  if (st.gateC) {
+    let from = first - STEP;
+    for (let p = 0; p < 14; p++) {
+      const rows = await gateFetch(st.gateC, from, 100);
+      if (!rows.length) break;
+      gateAdd(st, rows);
+      if (st.gateScale < 0) break;
+      const maxT = Math.max.apply(null, rows.map((x) => x.time)) * 1000;
+      if (maxT >= last || rows.length < 100) break;
+      from = maxT + STEP;
+      await sleep(60);
+    }
+  }
+  st.gateStatus = st.gateScale < 0 ? 'other' : st.gate.size ? 'ok' : 'none';
+  if (st.gateScale < 0) st.gate.clear();
+  st.dirty = true; st.listKey = '';
+}
+async function refreshGate(st) {
+  const rows = await gateFetch(st.gateC, 0, 4);
+  const before = st.gate.size;
+  gateAdd(st, rows);
+  if (st.gate.size !== before) st.dirty = true;
+}
 async function refreshBinance(st) {
   const rows = await binFetch(st.sym, 0, 4);
   const before = st.bin.size;
@@ -741,6 +792,7 @@ async function resync(st) {
   }
   await loadOI(st, (rows.length ? rows[0].t : last) - STEP);
   if (settings.binance && st.binStatus === 'ok' && gap > 2) await loadBinance(st).catch(() => {});
+  if (settings.gate && st.gateStatus === 'ok' && gap > 2) await loadGate(st).catch(() => {});
   pruneOI(st);
   st.needResync = false; st.dirty = true; st.paint = true;
 }
@@ -819,28 +871,37 @@ async function loadExtra() {
   } catch (e) { extraFailed = !extra; /* the page works without it: Bybit (+ Binance) only */ }
   paintModel();
 }
-// one exchange's series on the 15-minute grid, rescaled to Bybit's units from the price ratio (e.g. PEPE -> 1000PEPE)
+// factor from another exchange's units to Bybit's (e.g. PEPE -> 1000PEPE: 1000), from the price ratio; null when the
+// prices don't match after that (more than 15% apart): then the ticker is a different token there and is left out
+function unitScale(st, px) {
+  if (!(px > 0) || !(st.price > 0)) return null;
+  const scale = Math.pow(10, Math.round(Math.log10(st.price / px)));
+  return Math.abs(px * scale / st.price - 1) <= 0.15 ? scale : null;
+}
+// one exchange's series on the 15-minute grid, rescaled to Bybit's units
 function extraMap(st, s) {
-  if (!s || !(s.px > 0) || !(st.price > 0)) return null;
-  const scale = Math.pow(10, Math.round(Math.log10(st.price / s.px)));
+  const scale = s && unitScale(st, s.px);
+  if (!scale) return null;
   const m = new Map();
   s.v.forEach((v, i) => { if (v != null) m.set(s.t0 + i * STEP, v / scale); });
   return m.size ? m : null;
 }
 function applyExtra(st) {
   if (!(st.price > 0)) return;
-  const b = base(st.sym), o = extra && extra.okx[b], x = extra && extra.mexc[b], L = okxLive.get(b);
-  const key = (o ? o.t0 + ':' + o.v.length : '') + '|' + (x ? x.t0 + ':' + x.v.length : '') + '|' + (extra ? extra.at : 0) + '|' + (L ? L.at : 0);
+  const b = base(st.sym), o = extra && extra.okx[b], x = extra && extra.mexc[b], k = extra && extra.kraken && extra.kraken[b], L = okxLive.get(b);
+  const key = (o ? o.t0 + ':' + o.v.length : '') + '|' + (x ? x.t0 + ':' + x.v.length : '') + '|' + (k ? k.t0 + ':' + k.v.length : '') + '|' + (extra ? extra.at : 0) + '|' + (L ? L.at : 0);
   if (key === st.extraKey) return;
   st.extraKey = key;
   // OKX: the collected history, with the page's own live snapshots filling in where the file has no point yet
   let okx = extraMap(st, o);
-  if (L && L.px > 0) {
-    const scale = Math.pow(10, Math.round(Math.log10(st.price / L.px)));
+  const ls = L && unitScale(st, L.px);
+  if (ls) {
+    const scale = ls;
     for (const [t, v] of L.m) { if (!okx) okx = new Map(); if (!okx.has(t)) okx.set(t, v / scale); }
   }
   st.okx = okx;
   st.mexc = extraMap(st, x);
+  st.kraken = extraMap(st, k);
   st.dirty = true; st.listKey = '';
 }
 // OKX's current open interest is readable from the browser (its history is not), so while the page is open it
@@ -875,11 +936,13 @@ function oiVenues(st) {
   const v = [st.oi];
   if (settings.binance && st.binStatus === 'ok' && st.bin && st.bin.size) v.push(st.bin);
   if (settings.okx && st.okx) v.push(st.okx);
+  if (settings.gate && st.gateStatus === 'ok' && st.gate && st.gate.size) v.push(st.gate);
+  if (settings.kraken && st.kraken) v.push(st.kraken);
   if (settings.mexc && st.mexc) v.push(st.mexc);
   return v;
 }
 function venueNames() {
-  return ['Bybit'].concat(settings.binance ? ['Binance'] : [], settings.okx ? ['OKX'] : [], settings.mexc ? ['MEXC'] : []);
+  return ['Bybit'].concat(settings.binance ? ['Binance'] : [], settings.okx ? ['OKX'] : [], settings.gate ? ['Gate'] : [], settings.kraken ? ['Kraken'] : [], settings.mexc ? ['MEXC'] : []);
 }
 
 // ---------- model ----------
@@ -1550,11 +1613,13 @@ function paintDetail(st) {
   const inc = ['Bybit'], miss = [];
   if (settings.binance) { if (st.binStatus === 'ok') inc.push('Binance'); else miss.push(st.binStatus === 'loading' ? 'Binance loading' : 'not on Binance'); }
   if (settings.okx) { if (st.okx) inc.push('OKX'); else miss.push(extra ? 'not on OKX' : extraFailed ? 'OKX unavailable' : 'OKX loading'); }
+  if (settings.gate) { if (st.gateStatus === 'ok') inc.push('Gate'); else miss.push(st.gateStatus === 'loading' || st.gateStatus === 'pending' ? 'Gate loading' : st.gateStatus === 'other' ? 'another token on Gate' : 'not on Gate'); }
+  if (settings.kraken) { if (st.kraken) inc.push('Kraken'); else miss.push(extra ? 'not on Kraken' : extraFailed ? 'Kraken unavailable' : 'Kraken loading'); }
   if (settings.mexc) {
     if (st.mexc) inc.push('MEXC (' + (st.mexc.size * 15 / 1440).toFixed(1) + ' days collected)');
     else miss.push(extra ? 'no MEXC data yet' : extraFailed ? 'MEXC unavailable' : 'MEXC loading');
   }
-  const age = extra && (settings.okx || settings.mexc) ? ' · OKX/MEXC data ' + ago(extra.at) + ' old' : '';
+  const age = extra && (settings.okx || settings.kraken || settings.mexc) ? ' · OKX/Kraken/MEXC data ' + ago(extra.at) + ' old' : '';
   const venues = inc.join(' + ') + (miss.length ? ' (' + miss.join(', ') + ')' : '') + age;
   st.el.facts.textContent = 'Open interest: ' + venues + ' · Bybit OI ' + fusd(st.oiVal) + ' · max leverage ' + st.maxLev + 'x · maintenance margin ' +
     (st.mmr * 100).toFixed(2) + '% · ' + n + ' candles (' + (n * 15 / 1440).toFixed(1) + ' days) · map updated ' + hhmmss(st.calcAt);
@@ -1796,6 +1861,8 @@ async function oiLoop() {
       if (!st.oi.has(boundary)) { try { await refreshOI(st); } catch (e) { /* next round */ } await sleep(80); }
       if (settings.binance && st.binStatus === 'ok' && !st.bin.has(boundary)) { try { await refreshBinance(st); } catch (e) { /* next round */ } await sleep(80); }
       if (settings.binance && st.binStatus === 'pending') loadBinance(st).catch(() => { st.binStatus = 'none'; });
+      if (settings.gate && st.gateStatus === 'ok' && !st.gate.has(boundary)) { try { await refreshGate(st); } catch (e) { /* next round */ } await sleep(80); }
+      if (settings.gate && st.gateStatus === 'pending') loadGate(st).catch(() => { st.gateStatus = 'none'; });
     }
   } finally { oiBusy = false; }
 }
@@ -1871,6 +1938,8 @@ function fillForm() {
   $('#sigIn').value = String(settings.sig);
   $('#binIn').checked = settings.binance;
   $('#okxIn').checked = settings.okx;
+  $('#gateIn').checked = settings.gate;
+  $('#krakenIn').checked = settings.kraken;
   $('#mexcIn').checked = settings.mexc;
   $('#alertIn').checked = settings.alerts;
   $('#alertPctIn').value = String(settings.alertPct);
@@ -1904,21 +1973,23 @@ function applyCoins() {
 function applySettings() {
   const coins = sanitizeCoins($('#coinsIn').value);
   const mix = $('#mixIn').value, lb = $('#lbIn').value, sig = Number($('#sigIn').value), bin = $('#binIn').checked;
-  const okx = $('#okxIn').checked, mexc = $('#mexcIn').checked;
+  const okx = $('#okxIn').checked, mexc = $('#mexcIn').checked, gate = $('#gateIn').checked, kraken = $('#krakenIn').checked;
   const modelChanged = mix !== settings.mix || lb !== settings.lookback || sig !== settings.sig || bin !== settings.binance ||
-    okx !== settings.okx || mexc !== settings.mexc;
+    okx !== settings.okx || mexc !== settings.mexc || gate !== settings.gate || kraken !== settings.kraken;
   settings.mix = MIXES[mix] ? mix : 'retail';
   settings.lookback = LOOKBACK[lb] ? lb : '10';
   settings.sig = SIGS.indexOf(sig) >= 0 ? sig : 0.3;
   settings.binance = bin;
   settings.okx = okx;
+  settings.gate = gate;
+  settings.kraken = kraken;
   settings.mexc = mexc;
   settings.alerts = $('#alertIn').checked;
   const ap = Number($('#alertPctIn').value);
   settings.alertPct = ALERT_PCTS.indexOf(ap) >= 0 ? ap : 0.5;
   settings.sound = $('#soundIn').checked;
   settings.awake = $('#awakeIn').checked;
-  for (const k of ['mix', 'lookback', 'sig', 'binance', 'okx', 'mexc', 'alerts', 'alertPct', 'sound', 'awake']) store.set(k, settings[k]);
+  for (const k of ['mix', 'lookback', 'sig', 'binance', 'okx', 'gate', 'kraken', 'mexc', 'alerts', 'alertPct', 'sound', 'awake']) store.set(k, settings[k]);
   applyWake();
   if (settings.alerts && settings.sound) unlockAudio();      // the Apply tap counts as the gesture iOS needs
   if (coins.length && coins.join() !== settings.coins.join()) { settings.coins = coins; store.set('coins', coins); applyCoins(); }
@@ -1926,6 +1997,7 @@ function applySettings() {
     for (const st of S.values()) {
       st.prevUp = null; st.prevDn = null; st.dirty = true; st.calcAt = 0; st.listKey = '';
       if (settings.binance && st.status === 'ready' && st.binStatus !== 'ok' && st.binStatus !== 'loading') { st.binStatus = 'pending'; }
+      if (settings.gate && st.status === 'ready' && st.gateStatus === 'none') { st.gateStatus = 'pending'; }
     }
   }
   paintModel();
@@ -1952,7 +2024,7 @@ function bindUI() {
   $('#resetBtn').addEventListener('click', () => {
     $('#coinsIn').value = DEFAULT_COINS.join(', ');
     $('#mixIn').value = 'retail'; $('#lbIn').value = '10'; $('#sigIn').value = '0.3';
-    $('#binIn').checked = true; $('#okxIn').checked = true; $('#mexcIn').checked = true; $('#alertIn').checked = true; $('#alertPctIn').value = '0.5'; $('#soundIn').checked = true;
+    $('#binIn').checked = true; $('#okxIn').checked = true; $('#gateIn').checked = true; $('#krakenIn').checked = true; $('#mexcIn').checked = true; $('#alertIn').checked = true; $('#alertPctIn').value = '0.5'; $('#soundIn').checked = true;
     $('#awakeIn').checked = false;
   });
   $('#testBtn').addEventListener('click', () => {
